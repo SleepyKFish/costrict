@@ -1,4 +1,5 @@
 import path from "path"
+import fs from "fs/promises"
 import type { FileEntry, LineRange } from "@roo-code/types"
 import { isNativeProtocol } from "@roo-code/types"
 
@@ -336,6 +337,48 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				const fullPath = path.resolve(task.cwd, relPath)
 
 				try {
+					// Check if the path is a directory before attempting any file operations
+					const stats = await fs.stat(fullPath)
+					// If it's a directory, list its contents instead of reading as a file
+					if (stats.isDirectory()) {
+						try {
+							const dirEntries = await fs.readdir(fullPath, { withFileTypes: true })
+							const sortedEntries = dirEntries.sort((a, b) => {
+								// Directories first, then files
+								if (a.isDirectory() && !b.isDirectory()) return -1
+								if (!a.isDirectory() && b.isDirectory()) return 1
+								return a.name.localeCompare(b.name)
+							})
+
+							const dirContent = sortedEntries
+								.map((entry) => {
+									const type = entry.isDirectory() ? "[DIR] " : "[FILE]"
+									return `${type} ${entry.name}`
+								})
+								.join("\n")
+
+							const notice = `This is a directory containing ${dirEntries.length} item${dirEntries.length === 1 ? "" : "s"}`
+							await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
+
+							updateFileResult(relPath, {
+								xmlContent: `<file><path>${relPath}</path>\n<directory_listing>\n${dirContent}\n</directory_listing>\n<notice>${notice}</notice>\n</file>`,
+								nativeContent: `File: ${relPath}\nDirectory Listing:\n${dirContent}\n\nNote: ${notice}`,
+							})
+							continue
+						} catch (readdirError) {
+							const errorMsg = readdirError instanceof Error ? readdirError.message : String(readdirError)
+							updateFileResult(relPath, {
+								status: "error",
+								error: `Error reading directory: ${errorMsg}`,
+								xmlContent: `<file><path>${relPath}</path><error>Error reading directory: ${errorMsg}</error></file>`,
+								nativeContent: `File: ${relPath}\nError: Error reading directory: ${errorMsg}`,
+							})
+							await task.say("error", `Error reading directory ${relPath}: ${errorMsg}`)
+							continue
+						}
+					}
+
+					// Only proceed with file operations if it's actually a file
 					const [totalLines, isBinary] = await Promise.all([
 						countFileLines(fullPath),
 						isBinaryFileWithEncodingDetection(fullPath),
