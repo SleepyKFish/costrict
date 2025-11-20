@@ -95,13 +95,28 @@ export const ModeSelector = ({
 			zgsmCodeMode,
 			apiConfiguration?.apiProvider,
 		)
-		return allModes.map((mode) => ({
+		const modesWithDescriptions = allModes.map((mode) => ({
 			...mode,
 			description:
 				t(`modes:descriptions.${mode.slug}`, {
 					defaultValue: customModePrompts?.[mode.slug]?.description,
 				}) ?? mode.description,
 		}))
+
+		// 添加 Control 入口（作为特殊项，不是真正的 Mode）
+		// 只在 vibe 模式下显示，strict 模式下不显示
+		if (zgsmCodeMode === "vibe") {
+			const controlEntry = {
+				slug: "__control__",
+				name: "🔄 Control 批量处理",
+				description: "批量处理多个文件",
+				isControlEntry: true, // 标记为特殊的 Control 入口
+			} as ModeConfig & { isControlEntry?: boolean }
+
+			return [...modesWithDescriptions, controlEntry]
+		}
+
+		return modesWithDescriptions
 	}, [customModes, zgsmCodeMode, apiConfiguration?.apiProvider, t, customModePrompts])
 
 	// Find the selected mode.
@@ -166,6 +181,20 @@ export const ModeSelector = ({
 
 	const handleSelect = React.useCallback(
 		(modeSlug: string) => {
+			// 特殊处理：如果选择的是 Control 入口，跳转到 Control 界面
+			if (modeSlug === "__control__") {
+				window.postMessage(
+					{
+						type: "action",
+						action: "controlButtonClicked",
+					},
+					"*",
+				)
+				setOpen(false)
+				setSearchValue("")
+				return
+			}
+
 			onChange(modeSlug as Mode)
 			setOpen(false)
 			// Clear search after selection.
@@ -295,6 +324,7 @@ export const ModeSelector = ({
 							<div className="py-1">
 								{filteredModes.map((mode) => {
 									const isSelected = mode.slug === value
+									const isControlEntry = (mode as any).isControlEntry === true
 									return (
 										<div
 											key={mode.slug}
@@ -303,9 +333,11 @@ export const ModeSelector = ({
 											className={cn(
 												"px-3 py-1.5 text-sm cursor-pointer flex items-center",
 												"hover:bg-vscode-list-hoverBackground",
-												isSelected
+												isSelected && !isControlEntry
 													? "bg-vscode-list-activeSelectionBackground text-vscode-list-activeSelectionForeground"
 													: "",
+												// Control 入口使用特殊样式
+												isControlEntry && "border-t border-vscode-dropdown-border mt-1 pt-2",
 											)}
 											data-testid="mode-selector-item">
 											<div className="flex-1 min-w-0">
@@ -316,7 +348,9 @@ export const ModeSelector = ({
 													</div>
 												)}
 											</div>
-											{isSelected && <Check className="ml-auto size-4 p-0.5" />}
+											{isSelected && !isControlEntry && (
+												<Check className="ml-auto size-4 p-0.5" />
+											)}
 										</div>
 									)
 								})}

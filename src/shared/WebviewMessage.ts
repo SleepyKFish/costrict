@@ -190,6 +190,13 @@ export interface WebviewMessage {
 		| "dismissUpsell"
 		| "getDismissedUpsells"
 		| "updateSettings"
+		| "startControlTask"
+		| "continueNextControlTask"
+		| "toggleControlTaskEnabled"
+		| "cancelControlTask"
+		| "resetControl"
+		| "requestControlState"
+		| "showWarning"
 	text?: string
 	editedMessageContent?: string
 	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "cloud" | "zgsm-account"
@@ -221,6 +228,7 @@ export interface WebviewMessage {
 	source?: "global" | "project"
 	requestId?: string
 	ids?: string[]
+	taskId?: string // For control task operations
 	hasSystemPromptOverride?: boolean
 	terminalOperation?: "continue" | "abort"
 	terminalPid?: number

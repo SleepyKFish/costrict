@@ -25,6 +25,7 @@ import {
 } from "./base/common"
 import { ZgsmAuthApi, ZgsmAuthCommands, ZgsmAuthService, ZgsmAuthStorage } from "./auth"
 import { initCodeReview, disposeGitCommitListener } from "./code-review"
+import { initControl } from "./control"
 import { initTelemetry } from "./telemetry"
 import { initErrorCodeManager } from "./error-code"
 import { NotificationService } from "./notification"
@@ -156,6 +157,7 @@ export async function activate(
 		provider.log("Failed to check login status at startup: " + error.message)
 	}
 	initCodeReview(context, provider, outputChannel)
+	initControl(context, provider, outputChannel)
 	CompletionStatusBar.create(context)
 	initTelemetry(provider)
 

@@ -497,6 +497,77 @@ export const webviewMessageHandler = async (
 		case "cancelReviewTask":
 			await CodeReviewService.getInstance().cancelCurrentTask()
 			break
+		case "startControlTask":
+			try {
+				const { ControlService } = await import("../costrict/control")
+				const controlService = ControlService.getInstance()
+				controlService.setProvider(provider)
+				await controlService.startControlTask(message.text || "")
+			} catch (error) {
+				provider.log(`[Control] Failed to start task: ${error}`)
+				vscode.window.showErrorMessage(
+					`Control 任务启动失败: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
+			break
+		case "continueNextControlTask":
+			try {
+				const { ControlService } = await import("../costrict/control")
+				const controlService = ControlService.getInstance()
+				await controlService.continueNextTask()
+			} catch (error) {
+				provider.log(`[Control] Failed to continue next task: ${error}`)
+				vscode.window.showErrorMessage(
+					`继续任务失败: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
+			break
+		case "toggleControlTaskEnabled":
+			try {
+				const { ControlService } = await import("../costrict/control")
+				const controlService = ControlService.getInstance()
+				controlService.toggleTaskEnabled(message.taskId || "")
+			} catch (error) {
+				provider.log(`[Control] Failed to toggle task enabled: ${error}`)
+			}
+			break
+		case "cancelControlTask":
+			try {
+				const { ControlService } = await import("../costrict/control")
+				const controlService = ControlService.getInstance()
+				controlService.cancelTask()
+			} catch (error) {
+				provider.log(`[Control] Failed to cancel task: ${error}`)
+			}
+			break
+		case "resetControl":
+			try {
+				const { ControlService } = await import("../costrict/control")
+				const controlService = ControlService.getInstance()
+				controlService.reset()
+			} catch (error) {
+				provider.log(`[Control] Failed to reset: ${error}`)
+			}
+			break
+		case "requestControlState":
+			try {
+				const { ControlService } = await import("../costrict/control")
+				const controlService = ControlService.getInstance()
+				const currentTask = controlService.getCurrentTask()
+				const currentProgress = controlService.getCurrentProgress()
+
+				if (currentTask) {
+					// 发送当前任务状态到前端，包括当前进度
+					await provider.postMessageToWebview({
+						type: "controlStateResponse",
+						task: currentTask,
+						progress: currentProgress,
+					})
+				}
+			} catch (error) {
+				provider.log(`[Control] Failed to get state: ${error}`)
+			}
+			break
 		case "webviewDidLaunch":
 			// Load custom modes first
 			const customModes = await provider.customModesManager.getCustomModes()

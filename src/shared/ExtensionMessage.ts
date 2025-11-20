@@ -148,6 +148,8 @@ export interface ExtensionMessage {
 		| "dismissedUpsells"
 		| "organizationSwitchResult"
 		| "interactionRequired"
+		| "controlProgress"
+		| "controlStateResponse"
 	text?: string
 	payload?: any // Add a generic payload for now, can refine later
 	// Checkpoint warning message
@@ -170,6 +172,8 @@ export interface ExtensionMessage {
 		| "switchTab"
 		| "toggleAutoApprove"
 		| "codeReviewButtonClicked"
+		| "controlButtonClicked"
+		| "hideControlView"
 	invoke?:
 		| "newChat"
 		| "sendMessage"
@@ -244,6 +248,9 @@ export interface ExtensionMessage {
 	list?: string[] // For dismissedUpsells
 	organizationId?: string | null // For organizationSwitchResult
 	notices?: Array<INotice> // For zgsmNotices, only "always" type notices
+	progress?: any // For controlProgress
+	subTasks?: any[] // For controlProgress sub tasks list
+	task?: any // For controlStateResponse - current control task state
 }
 
 export type ExtensionState = Pick<
