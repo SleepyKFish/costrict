@@ -58,7 +58,7 @@ export class ZgsmAiHandler extends BaseProvider implements SingleCompletionHandl
 		const urlHost = this._getUrlHost(this.baseURL)
 		const isAzureOpenAi = urlHost === "azure.com" || urlHost.endsWith(".azure.com") || options.openAiUseAzure
 
-		this.fetchModel()
+		this.updateModelInfo()
 		const timeout = getApiRequestTimeout()
 		this.apiResponseRenderModeInfo = getApiResponseRenderMode()
 		if (isAzureAiInference) {
@@ -101,7 +101,7 @@ export class ZgsmAiHandler extends BaseProvider implements SingleCompletionHandl
 		// Performance monitoring log
 		this.abortController = new AbortController()
 		const requestId = uuidv7()
-		await this.fetchModel()
+		await this.updateModelInfo()
 		const fromWorkflow =
 			metadata?.zgsmWorkflowMode ||
 			metadata?.mode === "strict" ||
@@ -511,17 +511,22 @@ export class ZgsmAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 	}
 
-	async fetchModel() {
+	async updateModelInfo() {
 		const id = this.options.zgsmModelId ?? zgsmDefaultModelId
+		const info =(await getModels({
+				provider: "zgsm",
+				baseUrl: `${this.options.zgsmBaseUrl?.trim() || ZgsmAuthConfig.getInstance().getDefaultApiBaseUrl()}`,
+				apiKey: this.options.zgsmAccessToken,
+			})
+		)[id] ?? zgsmModels.default
 
-		this.modelInfo =
-			(
-				await getModels({
-					provider: "zgsm",
-					baseUrl: `${this.options.zgsmBaseUrl?.trim() || ZgsmAuthConfig.getInstance().getDefaultApiBaseUrl()}`,
-					apiKey: this.options.zgsmAccessToken,
-				})
-			)[id] || zgsmModels.default
+		if (id.toLowerCase().includes("gemini")) {
+			Object.assign(info, {
+				supportsNativeTools: true,
+			})
+		}
+
+		this.modelInfo = info
 	}
 
 	override getModel() {
@@ -536,7 +541,7 @@ export class ZgsmAiHandler extends BaseProvider implements SingleCompletionHandl
 
 	async completePrompt(prompt: string, systemPrompt?: string, metadata?: any): Promise<string> {
 		const isAzureAiInference = this._isAzureAiInference(this.baseURL)
-		await this.fetchModel()
+		await this.updateModelInfo()
 		const model = this.getModel()
 		const modelInfo = model?.info
 		const requestId = uuidv7()
@@ -586,7 +591,7 @@ export class ZgsmAiHandler extends BaseProvider implements SingleCompletionHandl
 		systemPrompt: string,
 		messages: Anthropic.Messages.MessageParam[],
 	): ApiStream {
-		await this.fetchModel()
+		await this.updateModelInfo()
 		const modelInfo = this.getModel()
 		const methodIsAzureAiInference = this._isAzureAiInference(this.baseURL)
 
