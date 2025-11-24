@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState, useMemo } from "react"
 import { useEvent } from "react-use"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+// import posthog from "posthog-js"
 
 import { ExtensionMessage } from "@roo/ExtensionMessage"
 import TranslationProvider from "./i18n/TranslationContext"
@@ -15,6 +16,7 @@ import ChatView, { ChatViewRef } from "./components/chat/ChatView"
 import HistoryView from "./components/history/HistoryView"
 import SettingsView, { SettingsViewRef } from "./components/settings/SettingsView"
 import WelcomeView from "./components/welcome/WelcomeView"
+// import WelcomeViewProvider from "./components/welcome/WelcomeViewProvider"
 import McpView from "./components/mcp/McpView"
 // import { MarketplaceView } from "./components/marketplace/MarketplaceView"
 import ModesView from "./components/modes/ModesView"
@@ -112,6 +114,21 @@ const App = () => {
 		apiConfiguration,
 	} = useExtensionState()
 	const { t } = useTranslation()
+
+	// const [useProviderSignupView, setUseProviderSignupView] = useState(false)
+
+	// // Check PostHog feature flag for provider signup view
+	// // Wait for telemetry to be initialized before checking feature flags
+	// useEffect(() => {
+	// 	if (!didHydrateState || telemetrySetting === "disabled") {
+	// 		return
+	// 	}
+
+	// 	posthog.onFeatureFlags(function () {
+	// 		// Feature flag for new provider-focused welcome view
+	// 		setUseProviderSignupView(posthog?.getFeatureFlag("welcome-provider-signup") === "test")
+	// 	})
+	// }, [didHydrateState, telemetrySetting])
 
 	// Create a persistent state manager
 	// const marketplaceStateManager = useMemo(() => new MarketplaceViewStateManager(), [])
@@ -370,10 +387,7 @@ const App = () => {
 			)}
 			<div className={`${isChatTab ? "fixed inset-0 flex flex-col" : "hidden"}`}>
 				<div className={`header flex items-center justify-between px-5 ${isChatTab ? "" : "hidden"}`}>
-					<TabList
-						value={tab}
-						onValueChange={(val) => switchTab(val as Tab)}
-						className="header-left h-[28px]">
+					<TabList value={tab} onValueChange={(val) => switchTab(val as Tab)} className="header-left h-7">
 						{tabs.map(({ label, value }) => {
 							const isSelected = tab === value
 							const activeTabClass = isSelected ? "border-b border-gray-200" : ""
@@ -383,7 +397,7 @@ const App = () => {
 									key={value}
 									value={value}
 									isSelected={isSelected}
-									className={cn(activeTabClass, "mr-[16px]", "cursor-pointer")}
+									className={cn(activeTabClass, "mr-4", "cursor-pointer")}
 									focusNeedRing={false}>
 									{label}
 								</TabTrigger>
@@ -392,15 +406,15 @@ const App = () => {
 					</TabList>
 
 					{tab === "chat" && (
-						<div className="header-right flex absolute right-[12px]">
+						<div className="header-right flex absolute right-3">
 							<StandardTooltip content={t("chat:startNewTask.title")}>
 								<i
-									className="codicon codicon-add mr-[4px] cursor-pointer p-[2px]"
+									className="codicon codicon-add mr-1 cursor-pointer p-0.5"
 									onClick={() => resetTabs()}></i>
 							</StandardTooltip>
 							<StandardTooltip content={t("history:history")}>
 								<i
-									className="codicon codicon-history cursor-pointer p-[2px]"
+									className="codicon codicon-history cursor-pointer p-0.5"
 									onClick={() => switchTab("history")}></i>
 							</StandardTooltip>
 						</div>

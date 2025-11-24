@@ -526,6 +526,7 @@ describe("ClineProvider", () => {
 
 		const mockState: ExtensionState = {
 			version: "1.0.0",
+			isBrowserSessionActive: false,
 			clineMessages: [],
 			taskHistory: [],
 			shouldShowAnnouncement: false,
@@ -852,7 +853,7 @@ describe("ClineProvider", () => {
 		expect(mockPostMessage).toHaveBeenCalled()
 	})
 
-	test("requestDelaySeconds defaults to 10 seconds", async () => {
+	test("requestDelaySeconds defaults to 3 seconds", async () => {
 		// Mock globalState.get to return undefined for requestDelaySeconds
 		;(mockContext.globalState.get as any).mockImplementation((key: string) => {
 			if (key === "requestDelaySeconds") {
@@ -862,7 +863,7 @@ describe("ClineProvider", () => {
 		})
 
 		const state = await provider.getState()
-		expect(state.requestDelaySeconds).toBe(10)
+		expect(state.requestDelaySeconds).toBe(3)
 	})
 
 	test("alwaysApproveResubmit defaults to false", async () => {

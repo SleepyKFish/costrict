@@ -150,6 +150,8 @@ export interface ExtensionMessage {
 		| "interactionRequired"
 		| "controlProgress"
 		| "controlStateResponse"
+		| "browserSessionUpdate"
+		| "browserSessionNavigate"
 	text?: string
 	payload?: any // Add a generic payload for now, can refine later
 	// Checkpoint warning message
@@ -251,6 +253,9 @@ export interface ExtensionMessage {
 	progress?: any // For controlProgress
 	subTasks?: any[] // For controlProgress sub tasks list
 	task?: any // For controlStateResponse - current control task state
+	browserSessionMessages?: ClineMessage[] // For browser session panel updates
+	isBrowserSessionActive?: boolean // For browser session panel updates
+	stepIndex?: number // For browserSessionNavigate: the target step index to display
 }
 
 export type ExtensionState = Pick<
@@ -377,6 +382,8 @@ export type ExtensionState = Pick<
 	organizationAllowList: OrganizationAllowList
 	organizationSettingsVersion?: number
 
+	isBrowserSessionActive: boolean // Actual browser session state
+
 	autoCondenseContext: boolean
 	autoCondenseContextPercent: number
 	marketplaceItems?: MarketplaceItem[]
@@ -416,6 +423,7 @@ export interface ClineSayTool {
 		| "imageGenerated"
 		| "runSlashCommand"
 		| "updateTodoList"
+	parentTaskId?: string
 	path?: string
 	diff?: string
 	content?: string
@@ -464,6 +472,7 @@ export const browserActions = [
 	"click",
 	"hover",
 	"type",
+	"press",
 	"scroll_down",
 	"scroll_up",
 	"resize",
@@ -477,6 +486,7 @@ export interface ClineSayBrowserAction {
 	coordinate?: string
 	size?: string
 	text?: string
+	executedCoordinate?: string
 }
 
 export type BrowserActionResult = {
@@ -484,6 +494,8 @@ export type BrowserActionResult = {
 	logs?: string
 	currentUrl?: string
 	currentMousePosition?: string
+	viewportWidth?: number
+	viewportHeight?: number
 }
 
 export interface ClineAskUseMcpServer {

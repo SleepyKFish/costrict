@@ -26,6 +26,7 @@ export interface RooTerminalCallbacks {
 	onShellExecutionStarted: (pid: number | undefined, process: RooTerminalProcess) => void
 	onShellExecutionComplete: (details: ExitCodeDetails, process: RooTerminalProcess) => void
 	onNoShellIntegration?: (message: string, process: RooTerminalProcess) => void
+	triggerUIToProceed?: (line: string, process: RooTerminalProcess) => void
 }
 
 export interface RooTerminalProcess extends EventEmitter<RooTerminalProcessEvents> {
@@ -34,6 +35,7 @@ export interface RooTerminalProcess extends EventEmitter<RooTerminalProcessEvent
 	run: (command: string) => Promise<void>
 	continue: () => void
 	abort: () => void
+	userInput: (string: string) => void
 	hasUnretrievedOutput: () => boolean
 	getUnretrievedOutput: () => string
 }
