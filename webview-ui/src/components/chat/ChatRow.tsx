@@ -39,9 +39,9 @@ import { BatchDiffApproval } from "./BatchDiffApproval"
 import { ProgressIndicator } from "./ProgressIndicator"
 import { Markdown } from "./Markdown"
 import { CommandExecution } from "./CommandExecution"
-// import { CommandExecutionError } from "./CommandExecutionError"
+import { CommandExecutionError } from "./CommandExecutionError"
 import { AutoApprovedRequestLimitWarning } from "./AutoApprovedRequestLimitWarning"
-import { /* CondenseContextErrorRow, */ CondensingContextRow, ContextCondenseRow } from "./ContextCondenseRow"
+import { CondenseContextErrorRow, CondensingContextRow, ContextCondenseRow } from "./ContextCondenseRow"
 import CodebaseSearchResultsDisplay from "./CodebaseSearchResultsDisplay"
 import { appendImages } from "@src/utils/imageUtils"
 import { McpExecution } from "./McpExecution"
@@ -141,18 +141,14 @@ const ChatRow = memo(
 		const prevHeightRef = useRef(0)
 
 		const [chatrow, { height }] = useSize(
-			message?.metadata?.isRateLimitRetry ? (
-				<></>
-			) : (
-				<div
-					className={`px-[15px] py-[10px] transition-all duration-300 ease-in-out ${
-						props.shouldHighlight
-							? "bg-vscode-editor-findMatchHighlightBackground border-l-4 border-vscode-editor-findMatchBorder shadow-sm"
-							: ""
-					}`}>
-					<ChatRowContent {...props} />
-				</div>
-			),
+			<div
+				className={`px-[15px] py-2.5 transition-all duration-300 ease-in-out ${
+					props.shouldHighlight
+						? "bg-vscode-editor-findMatchHighlightBackground border-l-4 border-vscode-editor-findMatchBorder shadow-sm"
+						: ""
+				}`}>
+				<ChatRowContent {...props} />
+			</div>,
 		)
 
 		useEffect(() => {
@@ -187,7 +183,6 @@ export const ChatRowContent = ({
 	onSuggestionClick,
 	onFollowUpUnmount,
 	onBatchFileResponse,
-	// isFollowUpAnswered,
 	isFollowUpAnswered,
 	// editable,
 	searchQuery,
@@ -302,7 +297,18 @@ export const ChatRowContent = ({
 	const errorColor = "var(--vscode-errorForeground)"
 	const successColor = "var(--vscode-charts-green)"
 	const cancelledColor = "var(--vscode-descriptionForeground)"
-
+	const getIconSpan = (iconName: string, color: string) => (
+		<div
+			style={{
+				width: 16,
+				height: 16,
+				display: "flex",
+				alignItems: "center",
+				justifyContent: "center",
+			}}>
+			<span className={`codicon codicon-${iconName}`} style={{ color, fontSize: 16, marginBottom: "-1.5px" }} />
+		</div>
+	)
 	const [icon, title] = useMemo(() => {
 		switch (type) {
 			case "error":
@@ -348,21 +354,6 @@ export const ChatRowContent = ({
 			case "api_req_retry_delayed":
 				return []
 			case "api_req_started":
-				const getIconSpan = (iconName: string, color: string) => (
-					<div
-						style={{
-							width: 16,
-							height: 16,
-							display: "flex",
-							alignItems: "center",
-							justifyContent: "center",
-						}}>
-						<span
-							className={`codicon codicon-${iconName}`}
-							style={{ color, fontSize: 16, marginBottom: "-1.5px" }}
-						/>
-					</div>
-				)
 				return [
 					apiReqCancelReason !== null && apiReqCancelReason !== undefined ? (
 						apiReqCancelReason === "user_cancelled" ? (
@@ -991,6 +982,20 @@ export const ChatRowContent = ({
 								}}>
 								<span className="codicon codicon-check"></span>
 								{t("chat:subtasks.completionContent")}
+								{tool.parentTaskId && (
+									<a
+										href="javascript:void(0)"
+										onClick={(e) => {
+											e.stopPropagation()
+											vscode.postMessage({
+												type: "showTaskWithIdInNewTab",
+												text: tool.parentTaskId,
+											})
+										}}
+										style={{ color: "inherit", textDecoration: "underline" }}>
+										{t("chat:task.viewParentTask")}
+									</a>
+								)}
 							</div>
 							<div style={{ padding: "12px 16px", backgroundColor: "var(--vscode-editor-background)" }}>
 								<MarkdownBlock markdown={t("chat:subtasks.completionInstructions")} />
@@ -1093,13 +1098,14 @@ export const ChatRowContent = ({
 						</div>
 						{message.type === "ask" && (
 							<div className="pl-6">
-								<CodeAccordian
-									path={tool.path}
-									code={tool.content}
-									language="text"
-									isExpanded={isExpanded}
-									onToggleExpand={handleToggleExpand}
-								/>
+								<ToolUseBlock>
+									<div className="p-2">
+										<div className="mb-2 break-words">{tool.content}</div>
+										<div className="flex items-center gap-1 text-xs text-vscode-descriptionForeground">
+											{tool.path}
+										</div>
+									</div>
+								</ToolUseBlock>
 							</div>
 						)}
 					</>
@@ -1148,6 +1154,20 @@ export const ChatRowContent = ({
 									}}>
 									<span className="codicon codicon-arrow-left"></span>
 									{t("chat:subtasks.resultContent")}
+									{message.subtaskId && (
+										<a
+											href="javascript:void(0)"
+											onClick={(e) => {
+												e.stopPropagation()
+												vscode.postMessage({
+													type: "showTaskWithIdInNewTab",
+													text: message.subtaskId,
+												})
+											}}
+											style={{ color: "inherit", textDecoration: "underline" }}>
+											{t("chat:subtasks.viewSubtask")}
+										</a>
+									)}
 								</div>
 								<div
 									style={{
@@ -1201,8 +1221,21 @@ export const ChatRowContent = ({
 									!apiRequestBlockHide && apiReqStartedRequestText ? handleToggleExpand : () => {}
 								}>
 								<div style={{ display: "flex", alignItems: "center", gap: "10px", flexGrow: 1 }}>
-									{icon}
+									{!apiRequestBlockHide && apiReqStartedRequestText ? (
+										icon
+									) : isLast ? (
+										<ProgressIndicator />
+									) : (
+										getIconSpan("arrow-swap", normalColor)
+									)}
 									{title}
+									{(selectedLLM || originModelId) && !selectReason && (
+										<div
+											className="text-xs text-vscode-descriptionForeground border-vscode-dropdown-border/50 border px-1.5 py-0.5 rounded-lg"
+											title="Selected Model">
+											{isAuto ? t("chat:autoMode.selectedLLM", { selectedLLM }) : originModelId}
+										</div>
+									)}
 								</div>
 								<div
 									className="text-xs text-vscode-dropdown-foreground border-vscode-dropdown-border/50 border px-1.5 py-0.5 rounded-lg"
@@ -1210,22 +1243,24 @@ export const ChatRowContent = ({
 									${Number(cost || 0)?.toFixed(4)}
 								</div>
 							</div>
-							<div className="mt-2 flex items-center flex-wrap gap-2">
-								{(selectedLLM || originModelId) && (
-									<div
-										className="text-xs text-vscode-descriptionForeground border-vscode-dropdown-border/50 border px-1.5 py-0.5 rounded-lg"
-										title="Selected Model">
-										{isAuto ? t("chat:autoMode.selectedLLM", { selectedLLM }) : originModelId}
-									</div>
-								)}
-								{selectReason && (
-									<div
-										className="text-xs text-vscode-descriptionForeground border-vscode-dropdown-border/50 border px-1.5 py-0.5 rounded-lg"
-										title="Selection Reason">
-										{t("chat:autoMode.selectReason", { selectReason })}
-									</div>
-								)}
-							</div>
+							{selectReason && (
+								<div className="mt-2 flex items-center flex-wrap gap-2">
+									{(selectedLLM || originModelId) && (
+										<div
+											className="text-xs text-vscode-descriptionForeground border-vscode-dropdown-border/50 border px-1.5 py-0.5 rounded-lg"
+											title="Selected Model">
+											{isAuto ? t("chat:autoMode.selectedLLM", { selectedLLM }) : originModelId}
+										</div>
+									)}
+									{selectReason && (
+										<div
+											className="text-xs text-vscode-descriptionForeground border-vscode-dropdown-border/50 border px-1.5 py-0.5 rounded-lg"
+											title="Selection Reason">
+											{t("chat:autoMode.selectReason", { selectReason })}
+										</div>
+									)}
+								</div>
+							)}
 							{(((cost === null || cost === undefined) && apiRequestFailedMessage) ||
 								apiReqStreamingFailedMessage) && (
 								<ErrorRow
@@ -1251,7 +1286,7 @@ export const ChatRowContent = ({
 												<br />
 												<Button
 													size="sm"
-													className="ml-[24px]"
+													className="ml-6"
 													onClick={() =>
 														handleCopyErrorDetail(
 															apiRequestFailedMessage ||
@@ -1360,7 +1395,7 @@ export const ChatRowContent = ({
 								) : (
 									<div className="flex justify-between cursor-pointer">
 										<div
-											className="flex-grow px-2 py-1 wrap-anywhere rounded-lg transition-colors"
+											className="grow px-2 py-1 wrap-anywhere rounded-lg transition-colors"
 											onClick={(e) => {
 												e.stopPropagation()
 												if (!isStreaming) {
@@ -1449,10 +1484,7 @@ export const ChatRowContent = ({
 						</>
 					)
 				case "shell_integration_warning":
-					// console.log(t("chat:shellIntegration.title"), t("chat:shellIntegration.description"))
-
-					return null
-				// return <CommandExecutionError />
+					return <CommandExecutionError />
 				case "checkpoint_saved":
 					return (
 						<CheckpointSaved
@@ -1468,8 +1500,7 @@ export const ChatRowContent = ({
 					}
 					return message.contextCondense ? <ContextCondenseRow {...message.contextCondense} /> : null
 				case "condense_context_error":
-					// return <CondenseContextErrorRow errorText={message.text} />
-					return null
+					return <CondenseContextErrorRow errorText={message.text} />
 				case "codebase_search_result":
 					let parsed: {
 						content: {
@@ -1503,7 +1534,7 @@ export const ChatRowContent = ({
 				case "user_edit_todos":
 					return <UpdateTodoListToolBlock userEdited onChange={() => {}} />
 				case "api_req_retry_delayed":
-					return message?.metadata?.isRateLimitRetry ? null : (
+					return (
 						<ErrorRow
 							type="api_req_retry_delayed"
 							message={message.text || ""}
@@ -1515,7 +1546,7 @@ export const ChatRowContent = ({
 										<br />
 										<Button
 											size="sm"
-											className="ml-[24px]"
+											className="ml-6"
 											onClick={() => handleCopyErrorDetail(message.text || "")}>
 											{t("chat:copy.errorDetail")}
 										</Button>
@@ -1614,6 +1645,10 @@ export const ChatRowContent = ({
 							<ImageBlock imageUri={imageInfo.imageUri} imagePath={imageInfo.imagePath} />
 						</div>
 					)
+				case "browser_action":
+				case "browser_action_result":
+					// Handled by BrowserSessionRow; prevent raw JSON (action/result) from rendering here
+					return null
 				default:
 					return (
 						<>

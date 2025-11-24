@@ -107,6 +107,7 @@ import { defaultLang } from "../../utils/language"
 import ZgsmCodebaseIndexManager from "../costrict/codebase-index"
 import { sendZgsmCloseWindow } from "../costrict/auth/ipc"
 import { REQUESTY_BASE_URL } from "../../shared/utils/requesty"
+import { isJetbrainsPlatform } from "../../utils/platform"
 
 /**
  * https://github.com/microsoft/vscode-webview-ui-toolkit-samples/blob/main/default/weather-webview/src/providers/WeatherViewProvider.ts
@@ -162,7 +163,7 @@ export class ClineProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "nov-2025-v3.33.0-gemini-native-tools" // v3.33.0 Gemini 3 & Native Tools announcement
+	public readonly latestAnnouncementId = "nov-2025-v3.34.0-browser-use-2-cloud-paid" // v3.34.0 Browser Use 2.0 & Cloud Paid Models announcement
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -499,13 +500,13 @@ export class ClineProvider
 	// exists).
 	// This is used when a subtask is finished and the parent task needs to be
 	// resumed.
-	async finishSubTask(lastMessage: string) {
+	async finishSubTask(lastMessage: string, subtaskId?: string) {
 		// Remove the last cline instance from the stack (this is the finished
 		// subtask).
 		await this.removeClineFromStack()
 		// Resume the last cline instance in the stack (if it exists - this is
 		// the 'parent' calling task).
-		await this.getCurrentTask()?.completeSubtask(lastMessage)
+		await this.getCurrentTask()?.completeSubtask(lastMessage, subtaskId)
 	}
 	// Pending Edit Operations Management
 
@@ -1706,6 +1707,14 @@ export class ClineProvider
 		await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
 	}
 
+	async showTaskWithIdInNewTab(id: string) {
+		if (isJetbrainsPlatform()) {
+			return this.showTaskWithId(id)
+		}
+
+		await vscode.commands.executeCommand("zgsm.openInNewTab", id)
+	}
+
 	async exportTaskWithId(id: string) {
 		const { historyItem, apiConversationHistory } = await this.getTaskWithId(id)
 		await downloadTask(historyItem.ts, apiConversationHistory)
@@ -2011,6 +2020,7 @@ export class ClineProvider
 			openRouterImageGenerationSelectedModel,
 			openRouterUseMiddleOutTransform,
 			featureRoomoteControlEnabled,
+			isBrowserSessionActive,
 		} = await this.getState()
 
 		// let cloudOrganizations: CloudOrganizationMembership[] = []
@@ -2060,6 +2070,7 @@ export class ClineProvider
 			alwaysAllowModeSwitch: alwaysAllowModeSwitch ?? false,
 			alwaysAllowSubtasks: alwaysAllowSubtasks ?? false,
 			alwaysAllowUpdateTodoList: alwaysAllowUpdateTodoList ?? false,
+			isBrowserSessionActive,
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext: autoCondenseContext ?? true,
@@ -2107,7 +2118,7 @@ export class ClineProvider
 			mcpEnabled: mcpEnabled ?? true,
 			enableMcpServerCreation: enableMcpServerCreation ?? true,
 			alwaysApproveResubmit: alwaysApproveResubmit ?? false,
-			requestDelaySeconds: requestDelaySeconds ?? 10,
+			requestDelaySeconds: requestDelaySeconds ?? 3,
 			currentApiConfigName: currentApiConfigName ?? "default",
 			listApiConfigMeta: listApiConfigMeta ?? [],
 			pinnedApiConfigs: pinnedApiConfigs ?? {},
@@ -2278,6 +2289,9 @@ export class ClineProvider
 		// 	)
 		// }
 
+		// Get actual browser session state
+		const isBrowserSessionActive = this.getCurrentTask()?.browserSession?.isSessionActive() ?? false
+
 		// Return the same structure as before.
 		providerSettings.openAiHeaders = providerSettings.openAiHeaders ?? {}
 		return {
@@ -2297,6 +2311,7 @@ export class ClineProvider
 			alwaysAllowSubtasks: stateValues.alwaysAllowSubtasks ?? false,
 			alwaysAllowFollowupQuestions: stateValues.alwaysAllowFollowupQuestions ?? false,
 			alwaysAllowUpdateTodoList: stateValues.alwaysAllowUpdateTodoList ?? false,
+			isBrowserSessionActive,
 			followupAutoApproveTimeoutMs: stateValues.followupAutoApproveTimeoutMs ?? 60000,
 			diagnosticsEnabled: stateValues.diagnosticsEnabled ?? true,
 			allowedMaxRequests: stateValues.allowedMaxRequests,
@@ -2342,7 +2357,7 @@ export class ClineProvider
 			enableMcpServerCreation: stateValues.enableMcpServerCreation ?? true,
 			mcpServers: this.mcpHub?.getAllServers() ?? [],
 			alwaysApproveResubmit: stateValues.alwaysApproveResubmit ?? false,
-			requestDelaySeconds: Math.max(5, stateValues.requestDelaySeconds ?? 10),
+			requestDelaySeconds: Math.max(3, stateValues.requestDelaySeconds ?? 3),
 			currentApiConfigName: stateValues.currentApiConfigName ?? "default",
 			listApiConfigMeta: stateValues.listApiConfigMeta ?? [],
 			pinnedApiConfigs: stateValues.pinnedApiConfigs ?? {},
@@ -2889,6 +2904,10 @@ export class ClineProvider
 		// Capture the current instance to detect if rehydrate already occurred elsewhere
 		const originalInstanceId = task.instanceId
 
+		// Immediately cancel the underlying HTTP request if one is in progress
+		// This ensures the stream fails quickly rather than waiting for network timeout
+		task.cancelCurrentRequest()
+
 		// Begin abort (non-blocking)
 		task.abortTask()
 
@@ -2910,7 +2929,6 @@ export class ClineProvider
 		).catch(() => {
 			console.error("Failed to abort task")
 		})
-		task?.api?.cancelChat?.(task.abortReason)
 
 		// Defensive safeguard: if current instance already changed, skip rehydrate
 		const current = this.getCurrentTask()

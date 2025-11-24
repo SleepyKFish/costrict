@@ -248,6 +248,13 @@ export async function executeCommandInTerminal(
 			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 			exitDetails = details
 		},
+		triggerUIToProceed: (lines: string, process: RooTerminalProcess) => {
+			const status: CommandExecutionStatus = { executionId, status: "output", output: "" }
+			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+			task.ask("command_output", "").catch(() => {
+				// Silently handle ask errors (e.g., "Current ask promise was ignored")
+			})
+		},
 	}
 
 	if (terminalProvider === "vscode") {

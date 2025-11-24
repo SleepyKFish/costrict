@@ -38,9 +38,8 @@ import { Task } from "../task/Task"
 import { codebaseSearchTool } from "../tools/CodebaseSearchTool"
 import { experiments, EXPERIMENT_IDS } from "../../shared/experiments"
 import { applyDiffTool as applyDiffToolClass } from "../tools/ApplyDiffTool"
-import { isNativeProtocol } from "@roo-code/types"
 import { updateCospecMetadata } from "../checkpoints"
-import { resolveToolProtocol } from "../../utils/resolveToolProtocol"
+import { fixBrowserLaunchAction } from "../../utils/fixbrowserLaunchAction"
 
 /**
  * Processes and presents assistant message content to the user interface.
@@ -221,7 +220,7 @@ export async function presentAssistantMessage(cline: Task) {
 					case "list_code_definition_names":
 						return `[${block.name} for '${block.params.path}']`
 					case "browser_action":
-						return `[${block.name} for '${block.params.action}']`
+						return `[${block.name} for '${fixBrowserLaunchAction(block.params)}']`
 					case "use_mcp_tool":
 						return `[${block.name} for '${block.params.server_name}']`
 					case "access_mcp_resource":
@@ -253,16 +252,25 @@ export async function presentAssistantMessage(cline: Task) {
 
 			if (cline.didRejectTool) {
 				// Ignore any tool content after user has rejected tool once.
-				if (!block.partial) {
+				// For native protocol, we must send a tool_result for every tool_use to avoid API errors
+				const toolCallId = block.id
+				const errorMessage = !block.partial
+					? `Skipping tool ${toolDescription()} due to user rejecting a previous tool.`
+					: `Tool ${toolDescription()} was interrupted and not executed due to user rejecting a previous tool.`
+
+				if (toolCallId) {
+					// Native protocol: MUST send tool_result for every tool_use
 					cline.userMessageContent.push({
-						type: "text",
-						text: `Skipping tool ${toolDescription()} due to user rejecting a previous tool.`,
-					})
+						type: "tool_result",
+						tool_use_id: toolCallId,
+						content: errorMessage,
+						is_error: true,
+					} as Anthropic.ToolResultBlockParam)
 				} else {
-					// Partial tool after user rejected a previous tool.
+					// XML protocol: send as text
 					cline.userMessageContent.push({
 						type: "text",
-						text: `Tool ${toolDescription()} was interrupted and not executed due to user rejecting a previous tool.`,
+						text: errorMessage,
 					})
 				}
 
@@ -271,10 +279,25 @@ export async function presentAssistantMessage(cline: Task) {
 
 			if (cline.didAlreadyUseTool) {
 				// Ignore any content after a tool has already been used.
-				cline.userMessageContent.push({
-					type: "text",
-					text: `Tool [${block.name}] was not executed because a tool has already been used in this message. Only one tool may be used per message. You must assess the first tool's result before proceeding to use the next tool.`,
-				})
+				// For native protocol, we must send a tool_result for every tool_use to avoid API errors
+				const toolCallId = block.id
+				const errorMessage = `Tool [${block.name}] was not executed because a tool has already been used in this message. Only one tool may be used per message. You must assess the first tool's result before proceeding to use the next tool.`
+
+				if (toolCallId) {
+					// Native protocol: MUST send tool_result for every tool_use
+					cline.userMessageContent.push({
+						type: "tool_result",
+						tool_use_id: toolCallId,
+						content: errorMessage,
+						is_error: true,
+					} as Anthropic.ToolResultBlockParam)
+				} else {
+					// XML protocol: send as text
+					cline.userMessageContent.push({
+						type: "text",
+						text: errorMessage,
+					})
+				}
 
 				break
 			}
@@ -408,7 +431,7 @@ export async function presentAssistantMessage(cline: Task) {
 				// reviewed it, and we can declare task is finished and return
 				// control to the parent task to continue running the rest of
 				// the sub-tasks.
-				const toolMessage = JSON.stringify({ tool: "finishTask" })
+				const toolMessage = JSON.stringify({ tool: "finishTask", parentTaskId: cline.parentTaskId })
 				return await askApproval("tool", toolMessage)
 			}
 
@@ -450,8 +473,32 @@ export async function presentAssistantMessage(cline: Task) {
 				return text.replace(tagRegex, "")
 			}
 
-			if (block.name !== "browser_action") {
-				await cline.browserSession.closeBrowser()
+			// Keep browser open during an active session so other tools can run.
+			// Session is active if we've seen any browser_action_result and the last browser_action is not "close".
+			try {
+				const messages = cline.clineMessages || []
+				const hasStarted = messages.some((m: any) => m.say === "browser_action_result")
+				let isClosed = false
+				for (let i = messages.length - 1; i >= 0; i--) {
+					const m = messages[i]
+					if (m.say === "browser_action") {
+						try {
+							const act = JSON.parse(m.text || "{}")
+							isClosed = act.action === "close"
+						} catch {}
+						break
+					}
+				}
+				const sessionActive = hasStarted && !isClosed
+				// Only auto-close when no active browser session is present, and this isn't a browser_action
+				if (!sessionActive && block.name !== "browser_action") {
+					await cline.browserSession.closeBrowser()
+				}
+			} catch {
+				// On any unexpected error, fall back to conservative behavior
+				if (block.name !== "browser_action") {
+					await cline.browserSession.closeBrowser()
+				}
 			}
 
 			if (!block.partial) {
@@ -460,7 +507,8 @@ export async function presentAssistantMessage(cline: Task) {
 			}
 
 			// Validate tool use before execution.
-			const { mode, customModes } = (await cline.providerRef.deref()?.getState()) ?? {}
+			const { mode, customModes, terminalShellIntegrationDisabled } =
+				(await cline.providerRef.deref()?.getState()) ?? {}
 
 			try {
 				validateToolUse(
@@ -658,13 +706,14 @@ export async function presentAssistantMessage(cline: Task) {
 					})
 					break
 				case "browser_action":
-					await browserActionTool.handle(cline, block as ToolUse<"browser_action">, {
+					await browserActionTool(
+						cline,
+						block as ToolUse<"browser_action">,
 						askApproval,
 						handleError,
 						pushToolResult,
 						removeClosingTag,
-						toolProtocol,
-					})
+					)
 					break
 				case "execute_command":
 					await executeCommandTool.handle(cline, block as ToolUse<"execute_command">, {

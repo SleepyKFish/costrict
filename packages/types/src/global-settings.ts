@@ -262,6 +262,7 @@ export const SECRET_STATE_KEYS = [
 	"featherlessApiKey",
 	"ioIntelligenceApiKey",
 	"vercelAiGatewayApiKey",
+	"basetenApiKey",
 ] as const
 
 // Global secrets that are part of GlobalSettings (not ProviderSettings)
@@ -316,7 +317,7 @@ export const EVALS_SETTINGS: RooCodeSettings = {
 	writeDelayMs: 1000,
 	alwaysAllowBrowser: true,
 	alwaysApproveResubmit: true,
-	requestDelaySeconds: 10,
+	requestDelaySeconds: 3,
 	alwaysAllowMcp: true,
 	alwaysAllowModeSwitch: true,
 	alwaysAllowSubtasks: true,

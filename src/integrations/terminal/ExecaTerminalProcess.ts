@@ -193,7 +193,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 			this.subprocess = undefined
 		}
 
-		this.terminal.setActiveStream(undefined)
+		this.terminal.setActiveStream(undefined, this.pid)
 		this.emitRemainingBufferIfListening()
 		this.stopHotTimer()
 		this.emit("completed", this.fullOutput)
@@ -205,6 +205,17 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		this.isListening = false
 		this.removeAllListeners("line")
 		this.emit("continue")
+	}
+
+	public userInput(input: string) {
+		if (this.subprocess) {
+			// Write input to the subprocess
+			this.subprocess.stdin?.write(`${input ? `${input}\n` : ""}`)
+		} else {
+			// If the subprocess is not running, emit the input as a line
+			console.log(`[ExecaTerminalProcess#userInput] subprocess not running, emitting input as line: ${input}`)
+			this.emit("line", `${input ? `${input}\n` : ""}`)
+		}
 	}
 
 	public override abort() {
