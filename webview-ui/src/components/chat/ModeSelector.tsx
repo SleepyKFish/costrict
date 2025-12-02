@@ -183,15 +183,19 @@ export const ModeSelector = ({
 		(modeSlug: string) => {
 			// 特殊处理：如果选择的是 Control 入口，跳转到 Control 界面
 			if (modeSlug === "__control__") {
-				window.postMessage(
-					{
-						type: "action",
-						action: "controlButtonClicked",
-					},
-					"*",
-				)
+				// 先关闭下拉框和清空搜索
 				setOpen(false)
 				setSearchValue("")
+				// 等待下拉框关闭动画完成后再跳转到 Control 界面
+				setTimeout(() => {
+					window.postMessage(
+						{
+							type: "action",
+							action: "controlButtonClicked",
+						},
+						"*",
+					)
+				}, 25)
 				return
 			}
 
@@ -249,6 +253,19 @@ export const ModeSelector = ({
 			})
 		}
 	}, [open])
+
+	// Listen for closeAllPopovers event to force close the popover
+	React.useEffect(() => {
+		const handleCloseAll = () => {
+			setOpen(false)
+			setSearchValue("")
+		}
+
+		window.addEventListener("closeAllPopovers", handleCloseAll)
+		return () => {
+			window.removeEventListener("closeAllPopovers", handleCloseAll)
+		}
+	}, [])
 
 	// Determine if search should be shown.
 	const showSearch = !disableSearch && modes.length > SEARCH_THRESHOLD

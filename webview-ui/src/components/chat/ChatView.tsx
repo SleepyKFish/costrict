@@ -1462,7 +1462,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			data-testid="chat-view"
 			className={isHidden ? "hidden" : "fixed top-8 left-0 right-0 bottom-0 flex flex-col overflow-hidden"}>
 			{/* Control 子视图 */}
-			{showLoop && <ControlView isHidden={false} onSwitchToChat={() => setShowLoop(false)} />}
+			{showLoop && (
+				<ControlView
+					isHidden={false}
+					onSwitchToChat={() => {
+						// 发送事件通知关闭所有 popover
+						window.dispatchEvent(new CustomEvent("closeAllPopovers"))
+						// 使用 requestAnimationFrame 确保事件处理完成后再切换视图
+						requestAnimationFrame(() => {
+							setShowLoop(false)
+						})
+					}}
+				/>
+			)}
 
 			{/* Chat 主视图 - 当显示 Loop 时隐藏 */}
 			<div className={showLoop ? "hidden" : "flex flex-col h-full"}>

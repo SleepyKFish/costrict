@@ -1,5 +1,6 @@
 import * as vscode from "vscode"
 import * as path from "path"
+import * as fs from "fs/promises"
 import { v4 as uuidv4 } from "uuid"
 import type { ClineProvider } from "../../webview/ClineProvider"
 import {
@@ -8,11 +9,12 @@ import {
 	type SubTask,
 	ControlTaskStatus,
 	SubTaskStatus,
-	type ExtractedPathInfo,
 } from "./types"
-import { extractDirectoryFromPrompt, getFilteredFiles, validateDirectory } from "./fileParser"
 import { singleCompletionHandler } from "../../../utils/single-completion-handler"
 import { parseRules, extractFileListFromResponse } from "./ruleParser"
+import { type TaskEvents, RooCodeEventName } from "@roo-code/types"
+import { CoIgnoreController } from "../codebase-index/CoIgnoreController"
+import { isPathInIgnoredDirectory } from "../../../services/glob/ignore-utils"
 
 /**
  * Control 服务类 - 负责管理循环处理文件的整个流程
@@ -60,18 +62,16 @@ export class ControlService {
 			this.isProcessing = true
 			this.shouldCancel = false
 
-			// 0. 解析规则
+			// 解析规则（仅支持规则模式）
 			const rules = parseRules(userPrompt)
 
-			if (rules.isRuleMode) {
-				// 规则模式：先发现文件，再处理
-				await this.startRuleModeTask(rules.discoveryRule!, rules.processingRule!)
-			} else {
-				// 传统模式：保持原有流程
-				await this.startTraditionalModeTask(rules.originalPrompt!)
+			if (!rules.isRuleMode) {
+				throw new Error("请使用规则模式：#文件发现规则：xxx #文件处理规则：xxx")
 			}
+
+			// 启动规则模式任务
+			await this.startRuleModeTask(rules.discoveryRule!, rules.processingRule!)
 		} catch (error) {
-			this.provider?.log(`[Control] Error: ${error}`)
 			const completedCount =
 				this.currentTask?.subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length || 0
 			const failedCount = this.currentTask?.subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length || 0
@@ -85,19 +85,11 @@ export class ControlService {
 				message: `任务失败: ${error instanceof Error ? error.message : String(error)}`,
 			})
 
-			this.provider?.log("[Control] Task failed, switching back to Loop view")
-
 			// 清理状态
 			this.cleanup()
 
-			// 等待一小段时间确保进度更新消息被处理
-			await new Promise((resolve) => setTimeout(resolve, 100))
-
-			// 任务失败后，自动切换回 Loop 界面
-			await this.provider?.postMessageToWebview({
-				type: "action",
-				action: "controlButtonClicked",
-			})
+			// 任务失败后，自动切换回 Control 界面并清理
+			await this.switchToControlViewAndCleanup()
 		}
 	}
 
@@ -112,7 +104,7 @@ export class ControlService {
 		// 1. 创建文件发现子任务记录
 		const discoverySubTask: SubTask = {
 			id: uuidv4(),
-			filePath: "[文件发现任务]",
+			filePath: "文件发现任务",
 			status: SubTaskStatus.RUNNING,
 			enabled: true,
 			startTime: Date.now(),
@@ -129,52 +121,80 @@ export class ControlService {
 			isRuleMode: true,
 		}
 
-		this.sendProgressUpdate({
-			status: ControlTaskStatus.DISCOVERING_FILES,
-			currentFileIndex: 0,
-			totalFiles: 1, // 包含文件发现任务
-			completedCount: 0,
-			failedCount: 0,
-			message: "正在创建文件发现任务...",
-		})
-
-		const cwd = this.provider.cwd.toPosix()
+		const cwd = this.provider.cwd
+		const pathSeparator = path.sep
+		const isWindows = pathSeparator === "\\"
+		const examplePaths = isWindows
+			? `"src\\components\\Button.tsx",\n  "src\\components\\Input.tsx",\n  "src\\utils\\helpers.ts"`
+			: `"src/components/Button.tsx",\n  "src/components/Input.tsx",\n  "src/utils/helpers.ts"`
 
 		// 构建文件发现提示词
-		const discoveryPrompt = `你的任务是根据以下规则，找出项目中需要处理的文件列表。
+		const discoveryPrompt = `TASK OBJECTIVE:
+Based on the user's file discovery rules, precisely locate all files in the project that need to be processed, and save the results to the specified JSON file.
 
-文件发现规则：${discoveryRule}
+FILE DISCOVERY RULES:
+${discoveryRule}
 
-项目根目录：${cwd}
+PROJECT ROOT DIRECTORY:
+${cwd}
 
-请分析项目结构，找出所有符合规则的文件。最后，请以 JSON 数组格式返回文件路径列表（相对于项目根目录）。
+OPERATING SYSTEM PATH SEPARATOR:
+${pathSeparator === "\\" ? "\\ (Windows backslash)" : "/ (Unix/Linux/macOS forward slash)"}
 
-示例输出格式：
-\`\`\`json
+EXECUTION STEPS:
+1. Understand Rule Intent: Deeply understand the user's file discovery rules, clarify the file types to search for, directory scope, matching patterns, etc.
+2. Explore Project Structure: MUST use the list_files tool to browse the project directory structure and understand how the project is organized
+3. Precisely Match Files: Find all files that meet the criteria according to the rules, ensuring:
+   - MUST use list_files tool to verify files actually exist in the project (no fabrication or speculation)
+   - Paths use relative path format relative to the project root directory
+   - Exclude irrelevant files (such as node_modules, .git, build artifacts, etc.)
+4. Save Results: Save the discovered file list to the .cospec/discovered-files.json file
+
+MANDATORY: You MUST use the list_files tool in step 2 and 3. Do NOT rely on assumptions or prior knowledge about the project structure.
+
+OUTPUT REQUIREMENTS:
+1. File Path Format: Use the native OS path separator (${pathSeparator === "\\" ? "\\ for Windows" : "/ for Unix-like systems"}), relative to the project root directory
+2. JSON Format: Standard JSON array, each element is a file path string
+3. File Count Limit: Maximum 1000 files
+4. Save Location: .cospec${pathSeparator}discovered-files.json (create the directory first if it doesn't exist)
+
+JSON FILE FORMAT EXAMPLE:
 [
-  "src/components/Button.tsx",
-  "src/components/Input.tsx",
-  "src/utils/helpers.ts"
+  ${examplePaths}
 ]
-\`\`\`
 
-重要：
-1. 请确保文件路径是相对于项目根目录的
-2. 只返回实际存在的文件
-3. 最终必须返回一个 JSON 数组格式的文件列表`
+CRITICAL NOTES:
+- MUST use the list_files tool to explore directories and verify file existence
+- MUST use the write tool to write results to the .cospec${pathSeparator}discovered-files.json file
+- Only return files that actually exist; MUST use list_files tool to verify file existence (do NOT guess or fabricate file paths)
+- Paths must be relative paths using the OS-native path separator (${pathSeparator === "\\" ? "\\" : "/"})
+- If rules are ambiguous, make reasonable inferences based on common project structures and best practices
+- Exclude files that obviously don't need processing (such as dependency packages, build artifacts, hidden files, etc.)
 
-		this.provider.log(`[Control] Discovery prompt: ${discoveryPrompt}`)
+TASK COMPLETION CRITERIA:
+Once you have successfully written the file list to the .cospec${pathSeparator}discovered-files.json file, the task is complete.
+In your response, briefly explain:
+- How many files were discovered
+- What types or directories of files were mainly matched
+- Files have been saved to .cospec${pathSeparator}discovered-files.json
+
+Now please begin the file discovery task.`
 
 		// 保存 discoveryTask 引用，用于后续获取响应
 		let discoveryTask: any
 		let validFiles: string[] = []
 
 		try {
-			// 创建文件发现任务
-			discoveryTask = await this.provider.createTask(discoveryPrompt, [])
+			// 创建文件发现任务，启用高文件限制以便列出更多文件
+			discoveryTask = await this.provider.createTask(discoveryPrompt, [], undefined, {
+				highListFilesLimit: true,
+			})
 
 			// 保存任务 ID
 			discoverySubTask.taskId = discoveryTask.taskId
+
+			// 立即跳转到该对话任务（不先显示 control 界面）
+			await this.showTaskAndHideControl(discoveryTask.taskId)
 
 			// 更新进度，同步 taskId 到 UI
 			this.sendProgressUpdate({
@@ -186,73 +206,92 @@ export class ControlService {
 				message: "正在分析项目结构，发现文件...",
 			})
 
-			// 切换到对话界面，让用户可以与AI交互
-			this.provider.log("[Control] Starting discovery task, switching to chat view")
-			await this.provider.postMessageToWebview({
-				type: "action",
-				action: "hideControlView",
-			})
-			await new Promise((resolve) => setTimeout(resolve, 100))
-
-			// 自动跳转到该对话任务
-			await this.provider.showTaskWithId(discoveryTask.taskId)
-
 			// 等待任务完成
 			await this.waitForTaskCompletion(discoveryTask)
 
-			// 2. 从任务结果中提取文件列表
+			// 2. 从 .cospec/discovered-files.json 文件中读取文件列表
 			this.sendProgressUpdate({
 				status: ControlTaskStatus.PARSING,
 				currentFileIndex: 1,
 				totalFiles: 1,
 				completedCount: 0,
 				failedCount: 0,
-				message: "正在解析文件列表...",
+				message: "正在读取文件列表...",
 			})
 
-			// 获取任务的最终响应（使用保存的 discoveryTask 引用）
-			const taskResponse = this.getTaskResponse(discoveryTask)
-			this.provider.log(`[Control] Discovery task response: ${taskResponse}`)
+			// 读取 .cospec/discovered-files.json 文件
+			const discoveredFilesPath = path.join(this.provider.cwd, ".cospec", "discovered-files.json")
+			let files: string[] = []
 
-			// 解析文件列表
-			this.provider.log(`[Control] Step 2: Parsing file list from response`)
-			const files = extractFileListFromResponse(taskResponse)
-
-			if (files.length === 0) {
-				throw new Error("未能从文件发现任务中提取到有效的文件列表。请确保任务返回了 JSON 格式的文件数组。")
+			try {
+				const fileContent = await fs.readFile(discoveredFilesPath, "utf-8")
+				files = JSON.parse(fileContent)
+				console.log(`成功从 ${discoveredFilesPath} 读取到 ${files.length} 个文件`)
+			} catch (error) {
+				console.error("读取 .cospec/discovered-files.json 失败，尝试从任务响应中提取：", error)
+				// 降级方案：从任务响应中提取文件列表
+				const taskResponse = this.getTaskResponse(discoveryTask)
+				files = extractFileListFromResponse(taskResponse)
+				console.log(`从任务响应中提取到 ${files.length} 个文件`)
 			}
 
-			this.provider.log(`[Control] Extracted ${files.length} files from discovery task`)
+			// 验证文件列表
+			if (!Array.isArray(files) || files.length === 0) {
+				throw new Error("未能从 .cospec/discovered-files.json 或任务响应中获取有效的文件列表")
+			}
 
-			// 3. 验证文件是否存在
-			this.provider.log(`[Control] Step 3: Validating ${files.length} files`)
+			console.log("files", files)
+			// 3. 初始化 CoIgnoreController 来进行文件过滤
+			const ignoreController = new CoIgnoreController(this.provider.cwd)
+			await ignoreController.initialize()
+
+			// 4. 验证文件是否存在并使用 CoIgnoreController 过滤
 			for (const file of files) {
-				const filePath = file.startsWith("/") ? file.substring(1) : file
+				// 规范化路径，移除开头的路径分隔符
+				let filePath = file
+				if (filePath.startsWith("/") || filePath.startsWith("\\")) {
+					filePath = filePath.substring(1)
+				}
+				// 确保使用正确的路径分隔符
+				filePath = filePath.replace(/[/\\]/g, path.sep)
+
 				try {
+					// 检查文件是否存在
 					const fullPath = path.join(this.provider.cwd, filePath)
 					const uri = vscode.Uri.file(fullPath)
 					await vscode.workspace.fs.stat(uri)
+
+					// 使用 CoIgnoreController 检查文件是否被忽略
+					if (ignoreController.coignoreContentInitialized) {
+						if (!ignoreController.validateAccess(fullPath)) {
+							continue
+						}
+					}
+
+					// 使用内置的忽略模式
+					if (isPathInIgnoredDirectory(fullPath)) {
+						continue
+					}
+
 					validFiles.push(filePath)
 				} catch (error) {
-					this.provider.log(`[Control] File not found or inaccessible: ${filePath}`)
+					// 文件不存在或无法访问，跳过
 				}
 			}
 
+			// 清理 CoIgnoreController
+			ignoreController.dispose()
 			if (validFiles.length === 0) {
-				throw new Error("未找到有效文件")
+				throw new Error("未能从文件发现任务中提取到有效的文件列表。")
 			}
 
 			// 解析成功，标记文件发现任务完成
 			discoverySubTask.status = SubTaskStatus.COMPLETED
 			discoverySubTask.endTime = Date.now()
-			this.provider.log(
-				`[Control] Discovery task completed successfully in ${((discoverySubTask.endTime - discoverySubTask.startTime!) / 1000).toFixed(2)}s`,
-			)
 		} catch (error) {
 			discoverySubTask.status = SubTaskStatus.FAILED
 			discoverySubTask.endTime = Date.now()
 			discoverySubTask.error = error instanceof Error ? error.message : String(error)
-			this.provider.log(`[Control] Discovery task failed: ${discoverySubTask.error}`)
 
 			// 发送失败状态更新
 			this.sendProgressUpdate({
@@ -264,19 +303,12 @@ export class ControlService {
 				message: `文件发现任务失败: ${discoverySubTask.error}`,
 			})
 
-			// 切换回 Loop 界面显示错误
-			await new Promise((resolve) => setTimeout(resolve, 100))
-			await this.provider.postMessageToWebview({
-				type: "action",
-				action: "controlButtonClicked",
-			})
+			// 切换回 Control 界面显示错误并清理
+			await this.switchToControlViewAndCleanup()
 			return
 		}
 
-		this.provider.log(`[Control] Validated ${validFiles.length} files`)
-
-		// 4. 创建处理文件的子任务列表
-		this.provider.log(`[Control] Step 4: Creating processing subtasks for ${validFiles.length} files`)
+		// 5. 创建处理文件的子任务列表
 		const processingSubTasks: SubTask[] = validFiles.map((filePath) => ({
 			id: uuidv4(),
 			filePath,
@@ -284,8 +316,7 @@ export class ControlService {
 			enabled: true, // 默认启用所有任务
 		}))
 
-		// 5. 更新任务配置（保留文件发现子任务）
-		this.provider.log(`[Control] Step 5: Updating task configuration`)
+		// 6. 更新任务配置（保留文件发现子任务）
 		this.currentTask.files = validFiles
 		this.currentTask.subTasks = [discoverySubTask, ...processingSubTasks]
 
@@ -299,122 +330,27 @@ export class ControlService {
 			message: "正在生成指令模板...",
 		})
 
-		// 6. 先切换到 Loop 界面，让用户看到正在生成模板的状态
-		this.provider.log(`[Control] Step 6: Switching to Loop view`)
-		await new Promise((resolve) => setTimeout(resolve, 100))
-		await this.provider.postMessageToWebview({
-			type: "action",
-			action: "controlButtonClicked",
-		})
+		// 7. 先清理文件发现任务并切换到 Control 界面，让用户看到正在生成模板的状态
+		await this.switchToControlViewAndCleanup()
 
-		// 7. 使用 LLM 根据处理规则生成指令模板
-		this.provider.log(`[Control] Step 7: Calling LLM to enhance processing rule: ${processingRule}`)
+		// 8. 使用 LLM 根据处理规则生成指令模板
 		await this.generateInstructionTemplateFromRule(processingRule, validFiles)
-		this.provider.log(`[Control] Instruction template generated: ${this.currentTask.instructionTemplate}`)
 
-		// 8. 准备开始处理文件（不自动开始）
-		this.provider.log(`[Control] Step 8: Ready to process ${validFiles.length} files`)
-		this.provider.log(`[Control] Waiting for user to start processing...`)
-
-		// 更新状态为等待用户操作
+		// 更新状态为正在准备处理
 		this.sendProgressUpdate({
 			status: ControlTaskStatus.PROCESSING,
 			currentFileIndex: 1,
 			totalFiles: this.currentTask.subTasks.length,
 			completedCount: 1,
 			failedCount: 0,
-			message: "等待处理下一个任务",
+			message: "正在准备处理第一个文件...",
 		})
 
-		this.provider.log(`[Control] Ready for user action`)
-	}
+		// 等待界面更新
+		await new Promise((resolve) => setTimeout(resolve, 500))
 
-	/**
-	 * 传统模式任务：保持原有流程
-	 */
-	private async startTraditionalModeTask(userPrompt: string): Promise<void> {
-		if (!this.provider) {
-			throw new Error("Provider not set")
-		}
-
-		// 1. 解析提示词中的目录路径
-		this.sendProgressUpdate({
-			status: ControlTaskStatus.PARSING,
-			currentFileIndex: 0,
-			totalFiles: 0,
-			completedCount: 0,
-			failedCount: 0,
-			message: "正在解析文件路径...",
-		})
-
-		const cwd = this.provider.cwd.toPosix()
-		const pathInfo: ExtractedPathInfo = extractDirectoryFromPrompt(userPrompt, cwd)
-
-		let targetDirectory = pathInfo.directory
-		let effectivePrompt = pathInfo.cleanedPrompt || userPrompt
-
-		// 如果没有指定目录,则对整个项目进行处理
-		if (!pathInfo.hasPath) {
-			targetDirectory = ""
-			this.provider.log("[Control] No directory specified, processing entire project")
-		} else {
-			this.provider.log(`[Control] Target directory: ${targetDirectory}`)
-		}
-
-		// 2. 验证目录是否存在 (如果指定了目录)
-		if (targetDirectory && !(await validateDirectory(targetDirectory, cwd))) {
-			throw new Error(`目录不存在或无法访问: ${targetDirectory},${cwd}`)
-		}
-
-		// 3. 获取并过滤文件列表
-		this.sendProgressUpdate({
-			status: ControlTaskStatus.PARSING,
-			currentFileIndex: 0,
-			totalFiles: 0,
-			completedCount: 0,
-			failedCount: 0,
-			message: "正在扫描文件...",
-		})
-
-		const files = await getFilteredFiles(targetDirectory || ".", cwd, 1000)
-
-		if (files.length === 0) {
-			throw new Error("没有找到需要处理的文件")
-		}
-
-		this.provider.log(`[Control] Found ${files.length} files to process`)
-
-		// 4. 创建子任务列表
-		const subTasks: SubTask[] = files.map((filePath) => ({
-			id: uuidv4(),
-			filePath,
-			status: SubTaskStatus.PENDING,
-			enabled: true,
-		}))
-
-		// 5. 初始化任务配置
-		this.currentTask = {
-			userPrompt: effectivePrompt,
-			targetDirectory,
-			files,
-			subTasks,
-		}
-
-		// 6. 生成指令模板
-		await this.generateInstructionTemplate(effectivePrompt, files)
-
-		// 7. 等待用户手动开始处理（与规则模式保持一致）
-		// 生成模板后，显示进度并等待用户点击"开始下一个任务"
-		this.sendProgressUpdate({
-			status: ControlTaskStatus.PROCESSING,
-			currentFileIndex: 0,
-			totalFiles: subTasks.length,
-			completedCount: 0,
-			failedCount: 0,
-			message: "等待处理下一个任务",
-		})
-
-		this.provider.log(`[Control] Ready for user action (traditional mode)`)
+		// 自动开始第一个文件处理任务
+		await this.continueNextTask()
 	}
 
 	/**
@@ -436,18 +372,11 @@ export class ControlService {
 				const result = await apiCall()
 
 				// 成功则返回结果
-				if (attempt > 0) {
-					this.provider?.log(`[Control] API call succeeded on attempt ${attempt + 1}`)
-				}
 				return result
 			} catch (error) {
 				lastError = error instanceof Error ? error : new Error(String(error))
 
 				const hasMoreAttempts = attempt < maxRetries - 1
-
-				this.provider?.log(
-					`[Control] API call failed (attempt ${attempt + 1}/${maxRetries}): ${lastError.message}`,
-				)
 
 				if (!hasMoreAttempts) {
 					// 没有更多重试机会，抛出错误
@@ -457,8 +386,6 @@ export class ControlService {
 				// 计算延迟时间（指数退避）
 				const delayMs = initialDelay * Math.pow(2, attempt)
 
-				this.provider?.log(`[Control] Retrying in ${delayMs}ms...`)
-
 				// 等待后重试
 				await new Promise((resolve) => setTimeout(resolve, delayMs))
 			}
@@ -466,75 +393,6 @@ export class ControlService {
 
 		// 所有重试都失败，抛出最后的错误
 		throw lastError || new Error("API call failed after all retries")
-	}
-
-	/**
-	 * 生成指令模板（传统模式）
-	 * 让模型根据用户提示词生成一个可复用的指令模板
-	 */
-	private async generateInstructionTemplate(userPrompt: string, files: string[]): Promise<void> {
-		if (!this.provider || !this.currentTask) {
-			return
-		}
-
-		this.sendProgressUpdate({
-			status: ControlTaskStatus.GENERATING_TEMPLATE,
-			currentFileIndex: 0,
-			totalFiles: files.length,
-			completedCount: 0,
-			failedCount: 0,
-			message: "正在生成指令模板...",
-		})
-
-		// 构建提示词,让模型生成模板
-		const templatePrompt = `我需要对以下文件列表进行批量处理。请根据我的需求生成一个可复用的指令模板。
-
-用户需求: ${userPrompt}
-
-文件列表 (共 ${files.length} 个文件):
-${files.slice(0, 10).join("\n")}
-${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
-
-请生成一个指令模板,该模板将应用于每个文件。模板中使用 {filePath} 作为文件路径的占位符。
-
-要求:
-1. 指令应该简洁明确
-2. 适用于批量处理
-3. 保持用户原始需求的核心意图
-
-请直接输出指令模板,不要有其他解释。`
-
-		try {
-			// 获取当前的 API 配置
-			const state = await this.provider.getState()
-			const apiConfiguration = state.apiConfiguration
-
-			// 使用重试机制调用模型生成指令模板
-			const template = await this.callWithRetry(
-				() =>
-					singleCompletionHandler(
-						apiConfiguration,
-						templatePrompt,
-						"你是一个专业的任务规划助手，帮助用户生成清晰、简洁的批量处理指令模板。",
-						{ language: state.language },
-					),
-				3, // 最多重试 3 次
-				1000, // 初始延迟 1 秒
-			)
-
-			if (this.currentTask) {
-				this.currentTask.instructionTemplate = template.trim()
-			}
-
-			this.provider.log(`[Control] Generated template: ${template}`)
-		} catch (error) {
-			this.provider.log(`[Control] Failed to generate template after all retries: ${error}`)
-			// 如果生成失败,使用默认模板（直接使用用户原始提示词）
-			if (this.currentTask) {
-				this.currentTask.instructionTemplate = userPrompt
-				this.provider.log(`[Control] Using fallback template: ${userPrompt}`)
-			}
-		}
 	}
 
 	/**
@@ -548,46 +406,58 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 
 		this.sendProgressUpdate({
 			status: ControlTaskStatus.GENERATING_TEMPLATE,
-			currentFileIndex: 0,
-			totalFiles: files.length,
-			completedCount: 0,
+			currentFileIndex: 1,
+			totalFiles: this.currentTask.subTasks.length,
+			completedCount: 1,
 			failedCount: 0,
 			message: "正在生成指令模板...",
 		})
 
 		// 构建提示词,让模型生成模板
-		const templatePrompt = `你需要将用户的处理规则转换为一个清晰、可执行的指令模板。
+		const templatePrompt = `Your task is to create an instruction template by keeping the user's original rule EXACTLY as written and naturally integrating the file reference.
 
-【用户的处理规则】
+USER'S PROCESSING RULE (MUST KEEP INTACT):
 ${processingRule}
 
-【目标文件列表】（共 ${files.length} 个文件）
-${files.slice(0, 10).join("\n")}
-${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
+YOUR TASK:
+1. Copy the user's original rule word-for-word
+2. Naturally integrate {{file}} where the target file should be referenced
+   - Add minimal words (like "in", "to", "for") if needed to make it grammatically natural
+   - Or simply place {{file}} at the most logical position
+3. After the rule, add a "TASK DETAILS" section with execution steps
 
-【任务】
-请将上述处理规则转换为一个具体的、可操作的指令模板。这个模板将被应用到上述每个文件。
+OUTPUT FORMAT:
+	[User's original rule with {{file}} naturally integrated]
+	TASK DETAILS:
+	1. First specific action or verification step
+	2. Second specific action or verification step
+	3. Third specific action or verification step
+	(Add more steps as needed to fully clarify the task)
 
-【关键要求】
-1. 模板中必须包含 {{file}} 占位符（注意是双花括号）
-2. 指令要具体明确，让 AI 助手能够理解具体要做什么
-3. 指令应该是一个完整的、可直接执行的任务描述
-4. 保持用户原始处理规则的核心意图和要求
+GUIDELINES:
+- Each task detail should be concrete and executable
+- Focus on what needs to be checked, modified, or verified
+- Keep steps clear and concise
+- Ensure steps align with the user's original intent
 
-【输出格式示例】
-✓ 正确："为 {{file}} 中的所有导出函数添加 JSDoc 文档注释，包括参数说明、返回值说明和使用示例"
-✓ 正确："分析 {{file}} 的代码质量，检查是否存在未使用的导入、冗余代码、潜在的性能问题，并提供优化建议"
-✓ 正确："将 {{file}} 中的所有 console.log 语句替换为 logger.debug，保持原有的日志内容不变"
-✗ 错误："优化代码"（太笼统，没有 {{file}} 占位符）
-✗ 错误："处理文件"（没有说明具体要做什么）
+⚠️ CRITICAL REQUIREMENT: Do NOT modify, rephrase, rewrite, or change ANY word from the user's rule above. Keep it EXACTLY as written.
+⚠️ KEY POINT: Make {{file}} integration feel natural, as if it was part of the original sentence.
 
-【重要提示】
-- 请务必包含 {{file}} 占位符（使用双花括号，不是单花括号）
-- 如果用户的规则比较简单，请适当扩展以便 AI 助手更好地理解
-- 如果用户的规则已经很具体，可以保持原样但确保包含 {{file}} 占位符
+Now generate the instruction template:
 
-【输出】
-请直接输出一条指令模板，不要包含任何解释、引号或其他内容。`
+`
+
+		// 添加单文件处理强调说明
+		const scopeEmphasis = `
+CRITICAL CONSTRAINTS:
+- Single-File Focus: Process ONLY the file represented by {{file}}. This is a strictly single-file operation.
+- Pre-Check Requirement: Before making any modifications, verify whether {{file}} already meets the requirements.
+- No-Change Handling: If {{file}} already satisfies the requirements, briefly explain why and consider the task complete without making changes.
+- Context Awareness: You may read other files for context or reference, but modifications are strictly limited to {{file}}.
+- Task Completion: The task is complete once {{file}} has been fully processed according to the specified requirements.
+- Prohibited Actions: Do NOT perform cross-file modifications, project-wide changes, or batch operations.
+- Strict Scope Enforcement: Your entire focus and operations must remain confined to the single specified file {{file}}.
+`
 
 		try {
 			// 获取当前的 API 配置
@@ -600,7 +470,7 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 					singleCompletionHandler(
 						apiConfiguration,
 						templatePrompt,
-						"你是一个专业的指令模板生成助手。你的任务是将用户的简单处理规则转换为具体、清晰、可操作的指令模板。你必须在输出中包含 {{file}} 占位符（双花括号）。你只输出指令模板本身，不要添加任何解释、引号或额外内容。",
+						"You are an instruction template generator. Keep the user's original wording EXACTLY as written. Your only modifications: (1) naturally integrate {{file}} placeholder where the target file should be referenced - make it grammatically smooth and natural, (2) add a TASK DETAILS section with execution steps. The {{file}} should feel like it belongs in the sentence.",
 						{ language: state.language },
 					),
 				3, // 最多重试 3 次
@@ -611,28 +481,21 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 
 			// 验证模板是否包含 {{file}} 占位符
 			if (!trimmedTemplate.includes("{{file}}")) {
-				this.provider.log(
-					`[Control] Warning: Generated template does not contain {{file}} placeholder. Template: ${trimmedTemplate}`,
-				)
 				// 如果模板不包含占位符，尝试自动添加
-				const fixedTemplate = `对 {{file}} 进行以下处理：${trimmedTemplate}`
-				this.provider.log(`[Control] Using fixed template: ${fixedTemplate}`)
+				const fixedTemplate = `对 {{file}} 进行以下处理：${trimmedTemplate}${scopeEmphasis}`
 				if (this.currentTask) {
 					this.currentTask.instructionTemplate = fixedTemplate
 				}
 			} else {
 				if (this.currentTask) {
-					this.currentTask.instructionTemplate = trimmedTemplate
+					this.currentTask.instructionTemplate = trimmedTemplate + scopeEmphasis
 				}
-				this.provider.log(`[Control] Generated template: ${trimmedTemplate}`)
 			}
 		} catch (error) {
-			this.provider.log(`[Control] Failed to generate template after all retries: ${error}`)
 			// 如果生成失败,使用默认模板
 			if (this.currentTask) {
-				const fallbackTemplate = `对 {{file}} 进行以下处理：${processingRule}`
+				const fallbackTemplate = `对 {{file}} 进行以下处理：${processingRule}${scopeEmphasis}`
 				this.currentTask.instructionTemplate = fallbackTemplate
-				this.provider.log(`[Control] Using fallback template: ${fallbackTemplate}`)
 			}
 		}
 	}
@@ -642,26 +505,37 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 	 */
 	public async continueNextTask(): Promise<void> {
 		if (!this.provider || !this.currentTask) {
-			this.provider?.log("[Control] No current task, cannot continue")
+			if (this.provider) {
+				this.provider.log(`[Control] continueNextTask: provider or currentTask is null`)
+			}
 			return
 		}
 
 		const { subTasks } = this.currentTask
-		const startIndex = this.currentTask.isRuleMode ? 1 : 0
+		// 跳过第一个任务（文件发现任务）
+		const startIndex = 1
 
 		// 查找下一个启用且未完成的任务
 		const nextTaskIndex = subTasks.findIndex(
 			(task, index) => index >= startIndex && task.enabled && task.status === SubTaskStatus.PENDING,
 		)
 
+		if (this.provider) {
+			this.provider.log(`[Control] continueNextTask: nextTaskIndex = ${nextTaskIndex}`)
+		}
+
 		if (nextTaskIndex === -1) {
-			this.provider.log("[Control] No more enabled pending tasks")
 			// 所有任务完成，切换到 Loop 界面显示结果
+			if (this.provider) {
+				this.provider.log(`[Control] No more tasks, completing all tasks`)
+			}
 			await this.completeAllTasks()
 			return
 		}
 
-		this.provider.log(`[Control] Continuing with task ${nextTaskIndex}: ${subTasks[nextTaskIndex].filePath}`)
+		if (this.provider) {
+			this.provider.log(`[Control] Processing task at index ${nextTaskIndex}`)
+		}
 		await this.processSingleTaskAtIndex(nextTaskIndex)
 	}
 
@@ -676,15 +550,8 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 		const { subTasks, instructionTemplate } = this.currentTask
 		const subTask = subTasks[index]
 
-		// 计算实际处理的文件数（排除文件发现任务）
-		const startIndex = this.currentTask.isRuleMode ? 1 : 0
-		const actualFileCount = subTasks.filter((t, i) => i >= startIndex && t.enabled).length
-		const completedCount = subTasks.filter((t, i) => i >= startIndex && t.status === SubTaskStatus.COMPLETED).length
-		const currentFileNumber = completedCount + 1
-
 		// 更新子任务状态为运行中
 		subTask.status = SubTaskStatus.RUNNING
-		subTask.startTime = Date.now()
 
 		this.sendProgressUpdate({
 			status: ControlTaskStatus.PROCESSING,
@@ -693,61 +560,84 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 			currentSubTask: subTask,
 			completedCount: subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
 			failedCount: subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length,
-			message: `正在处理: ${subTask.filePath} (${currentFileNumber}/${actualFileCount})`,
+			message: `正在处理: ${subTask.filePath}`,
 		})
 
 		try {
-			// 切换到对话界面，让用户可以与AI交互
-			this.provider.log("[Control] Starting subtask, switching to chat view")
-			await this.provider.postMessageToWebview({
-				type: "action",
-				action: "hideControlView",
-			})
-			await new Promise((resolve) => setTimeout(resolve, 100))
-
-			// 处理单个文件
+			// 处理单个文件（时间统计在 processSingleFile 内部进行）
+			// processSingleFile 会自动跳转到对话任务并隐藏 control 界面
 			await this.processSingleFile(subTask, instructionTemplate || "")
 
 			// 标记为完成
 			subTask.status = SubTaskStatus.COMPLETED
-			subTask.endTime = Date.now()
-			this.provider.log(`[Control] Completed: ${subTask.filePath}`)
 		} catch (error) {
 			// 标记为失败
 			subTask.status = SubTaskStatus.FAILED
 			subTask.error = error instanceof Error ? error.message : String(error)
-			subTask.endTime = Date.now()
-			this.provider.log(`[Control] Failed: ${subTask.filePath}, Error: ${subTask.error}`)
 		}
 
-		// 更新进度
-		this.sendProgressUpdate({
-			status: ControlTaskStatus.PROCESSING,
-			currentFileIndex: index + 1,
-			totalFiles: subTasks.length,
-			currentSubTask: subTask,
-			completedCount: subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
-			failedCount: subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length,
-			message: `已完成 ${currentFileNumber}/${actualFileCount} 个文件`,
-		})
-
 		// 任务完成后，检查是否还有待处理的任务
+		const startIndex = 1 // 跳过文件发现任务
 		const hasMorePendingTasks = subTasks.some(
 			(t, i) => i >= startIndex && t.enabled && t.status === SubTaskStatus.PENDING,
 		)
 
+		if (this.provider) {
+			this.provider.log(
+				`[Control] Task completed. hasMorePendingTasks: ${hasMorePendingTasks}, shouldCancel: ${this.shouldCancel}`,
+			)
+		}
+
+		// 检查是否需要取消
+		if (this.shouldCancel) {
+			if (this.provider) {
+				this.provider.log(`[Control] Task cancelled by user, stopping auto-continue`)
+			}
+			return
+		}
+
 		if (!hasMorePendingTasks) {
 			// 所有启用的任务都已完成，结束整个流程
-			this.provider.log("[Control] All enabled tasks completed, finalizing...")
+			// 更新进度显示完成信息
+			this.sendProgressUpdate({
+				status: ControlTaskStatus.PROCESSING,
+				currentFileIndex: index + 1,
+				totalFiles: subTasks.length,
+				currentSubTask: subTask,
+				completedCount: subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
+				failedCount: subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length,
+				message: `任务已完成`,
+			})
 			await this.completeAllTasks()
 		} else {
-			// 还有待处理任务，切换回 Loop 界面等待用户操作
-			this.provider.log("[Control] Task completed, switching back to Loop view for next task")
-			await new Promise((resolve) => setTimeout(resolve, 100))
-			await this.provider.postMessageToWebview({
-				type: "action",
-				action: "controlButtonClicked",
+			// 还有待处理任务，自动继续下一个任务
+			if (this.provider) {
+				this.provider.log(`[Control] Auto-continuing to next task...`)
+			}
+
+			// 更新进度，显示正在准备下一个任务
+			this.sendProgressUpdate({
+				status: ControlTaskStatus.PROCESSING,
+				currentFileIndex: index + 1,
+				totalFiles: subTasks.length,
+				currentSubTask: subTask,
+				completedCount: subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
+				failedCount: subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length,
+				message: `正在准备下一个任务...`,
 			})
+
+			// 先切换回 Control 界面显示进度
+			await this.switchToControlViewAndCleanup()
+
+			// 等待一小段时间确保界面更新完成
+			await new Promise((resolve) => setTimeout(resolve, 500))
+
+			if (this.provider) {
+				this.provider.log(`[Control] Calling continueNextTask()...`)
+			}
+
+			// 自动继续下一个任务
+			await this.continueNextTask()
 		}
 	}
 
@@ -770,133 +660,10 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 			message: "所有任务已完成",
 		})
 
-		this.provider.log("[Control] All tasks completed")
 		this.cleanup()
 
-		await new Promise((resolve) => setTimeout(resolve, 100))
-		await this.provider.postMessageToWebview({
-			type: "action",
-			action: "controlButtonClicked",
-		})
-	}
-
-	/**
-	 * 串行处理所有文件（传统模式使用）
-	 */
-	private async processFilesSequentially(): Promise<void> {
-		if (!this.provider || !this.currentTask) {
-			return
-		}
-
-		const { subTasks, instructionTemplate } = this.currentTask
-
-		// 跳过第一个任务如果是文件发现任务
-		const startIndex = this.currentTask.isRuleMode ? 1 : 0
-
-		for (let i = startIndex; i < subTasks.length; i++) {
-			// 检查是否需要取消
-			if (this.shouldCancel) {
-				this.provider.log("[Control] Task cancelled by user")
-				this.sendProgressUpdate({
-					status: ControlTaskStatus.CANCELLED,
-					currentFileIndex: i,
-					totalFiles: subTasks.length,
-					completedCount: subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
-					failedCount: subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length,
-					message: "任务已取消",
-				})
-
-				this.provider.log("[Control] Task cancelled, switching back to Loop view")
-
-				// 清理状态
-				this.cleanup()
-
-				// 等待一小段时间确保进度更新消息被处理
-				await new Promise((resolve) => setTimeout(resolve, 100))
-
-				// 任务取消后，自动切换回 Loop 界面
-				await this.provider.postMessageToWebview({
-					type: "action",
-					action: "controlButtonClicked",
-				})
-
-				return
-			}
-
-			this.currentSubTaskIndex = i
-			const subTask = subTasks[i]
-
-			// 更新子任务状态为运行中
-			subTask.status = SubTaskStatus.RUNNING
-			subTask.startTime = Date.now()
-
-			// 计算实际处理的文件数（排除文件发现任务）
-			const actualFileCount = subTasks.length - startIndex
-			const currentFileNumber = i - startIndex + 1
-
-			this.sendProgressUpdate({
-				status: ControlTaskStatus.PROCESSING,
-				currentFileIndex: i,
-				totalFiles: subTasks.length,
-				currentSubTask: subTask,
-				completedCount: subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
-				failedCount: subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length,
-				message: `正在处理: ${subTask.filePath} (${currentFileNumber}/${actualFileCount})`,
-			})
-
-			try {
-				// 处理单个文件
-				await this.processSingleFile(subTask, instructionTemplate || "")
-
-				// 标记为完成
-				subTask.status = SubTaskStatus.COMPLETED
-				subTask.endTime = Date.now()
-				this.provider.log(`[Control] Completed: ${subTask.filePath}`)
-			} catch (error) {
-				// 标记为失败
-				subTask.status = SubTaskStatus.FAILED
-				subTask.error = error instanceof Error ? error.message : String(error)
-				subTask.endTime = Date.now()
-				this.provider.log(`[Control] Failed: ${subTask.filePath}, Error: ${subTask.error}`)
-			}
-
-			// 更新进度
-			this.sendProgressUpdate({
-				status: ControlTaskStatus.PROCESSING,
-				currentFileIndex: i + 1,
-				totalFiles: subTasks.length,
-				currentSubTask: subTask,
-				completedCount: subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
-				failedCount: subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length,
-				message: `已完成 ${currentFileNumber}/${actualFileCount} 个文件`,
-			})
-		}
-
-		// 所有文件处理完成
-		this.sendProgressUpdate({
-			status: ControlTaskStatus.COMPLETED,
-			currentFileIndex: subTasks.length,
-			totalFiles: subTasks.length,
-			completedCount: subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
-			failedCount: subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length,
-			message: "所有文件处理完成",
-		})
-
-		this.provider.log("[Control] All files processed, switching back to Loop view")
-
-		// 清理状态（但保留 currentTask 以便查看结果）
-		this.cleanup()
-
-		// 等待一小段时间确保进度更新消息被处理
-		await new Promise((resolve) => setTimeout(resolve, 100))
-
-		// 所有子任务完成后，自动切换回 Loop 界面展示完整状态
-		await this.provider.postMessageToWebview({
-			type: "action",
-			action: "controlButtonClicked",
-		})
-
-		this.provider.log("[Control] Switched to Loop view")
+		// 切换回 Control 界面并清理
+		await this.switchToControlViewAndCleanup()
 	}
 
 	/**
@@ -908,20 +675,8 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 			throw new Error("Provider not set")
 		}
 
-		// 根据模式确定占位符和替换逻辑
-		const isRuleMode = this.currentTask?.isRuleMode || false
-		let instruction: string
-
-		if (isRuleMode) {
-			// 规则模式：替换 {{file}} 占位符
-			instruction = template.replace(/\{\{file\}\}/g, `@/${subTask.filePath}`)
-		} else {
-			// 传统模式：替换 {filePath} 占位符
-			instruction = template.replace(/\{filePath\}/g, `@/${subTask.filePath}`)
-		}
-
-		this.provider.log(`[Control] Processing file: ${subTask.filePath}`)
-		this.provider.log(`[Control] Instruction: ${instruction}`)
+		// 替换 {{file}} 占位符
+		const instruction = template.replace(/\{\{file\}\}/g, `${subTask.filePath}`)
 
 		try {
 			// 创建一个新的对话任务
@@ -939,64 +694,88 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 					completedCount: subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
 					failedCount: subTasks.filter((t) => t.status === SubTaskStatus.FAILED).length,
 					currentSubTask: subTask,
-					message: `正在处理: ${subTask.filePath} (任务ID: ${subTask.taskId})`,
+					message: `正在处理: ${subTask.filePath}`,
 				})
 			}
 
-			// 自动跳转到该对话任务
-			await this.provider.showTaskWithId(task.taskId)
+			// 自动跳转到该对话任务并隐藏 control 界面
+			await this.showTaskAndHideControl(task.taskId)
+
+			// 记录 AI 处理开始时间（在准备工作完成后）
+			subTask.startTime = Date.now()
 
 			// 等待任务完成
 			await this.waitForTaskCompletion(task)
 
-			this.provider.log(`[Control] Task completed for file: ${subTask.filePath}`)
+			// 记录 AI 处理结束时间（任务完成后立即记录）
+			subTask.endTime = Date.now()
 		} catch (error) {
-			this.provider.log(`[Control] Task failed for file: ${subTask.filePath}, error: ${error}`)
+			// 记录失败时的结束时间
+			subTask.endTime = Date.now()
 			throw error
 		}
 	}
 
 	/**
 	 * 等待任务完成
-	 * 监听任务状态变化,当任务完成或失败时返回
+	 * 使用事件监听方式,当任务完成、中止或进入可恢复状态时返回
+	 * 注意：已取消超时限制，任务将持续等待直到完成或失败
 	 */
 	private async waitForTaskCompletion(task: any): Promise<void> {
 		return new Promise((resolve, reject) => {
 			let isResolved = false
 
-			// 设置超时 (例如 5 分钟)
-			const timeout = setTimeout(
-				() => {
-					if (!isResolved) {
-						isResolved = true
-						reject(new Error("任务超时"))
-					}
-				},
-				5 * 60 * 1000,
-			)
-
-			// 监听任务完成事件
-			const checkTaskStatus = () => {
-				// 检查任务是否已完成
-				const currentTask = this.provider?.getCurrentTask()
-
-				// 如果当前任务不是我们创建的任务,说明任务已经完成
-				if (!currentTask || currentTask !== task) {
-					if (!isResolved) {
-						isResolved = true
-						clearTimeout(timeout)
-						this.provider?.log(`[Control] Task completed: ${task.taskId}`)
-						resolve()
-					}
-					return
-				}
-
-				// 继续等待
-				setTimeout(checkTaskStatus, 500)
+			// 事件处理器注册函数
+			const registerHandler = <K extends keyof TaskEvents>(
+				event: K,
+				handler: (...args: TaskEvents[K]) => void | Promise<void>,
+			) => {
+				task.on(event, handler as any)
 			}
 
-			// 开始检查
-			setTimeout(checkTaskStatus, 500)
+			// 清理函数：移除所有事件监听器
+			const cleanup = () => {
+				task.removeAllListeners(RooCodeEventName.TaskCompleted)
+				task.removeAllListeners(RooCodeEventName.TaskAborted)
+				task.removeAllListeners(RooCodeEventName.TaskResumable)
+				task.removeAllListeners(RooCodeEventName.TaskIdle)
+			}
+
+			// 监听任务完成事件
+			registerHandler(RooCodeEventName.TaskCompleted, () => {
+				if (!isResolved) {
+					isResolved = true
+					cleanup()
+					resolve()
+				}
+			})
+
+			// 监听任务中止事件
+			registerHandler(RooCodeEventName.TaskAborted, () => {
+				if (!isResolved) {
+					isResolved = true
+					cleanup()
+					reject(new Error("任务已中止"))
+				}
+			})
+
+			// 监听任务进入可恢复状态（通常表示需要用户介入）
+			registerHandler(RooCodeEventName.TaskResumable, () => {
+				if (!isResolved) {
+					isResolved = true
+					cleanup()
+					reject(new Error("任务已中止"))
+				}
+			})
+
+			// 监听任务进入空闲状态（通常表示服务不可用）
+			registerHandler(RooCodeEventName.TaskIdle, () => {
+				if (!isResolved) {
+					isResolved = true
+					cleanup()
+					reject(new Error("任务已中止"))
+				}
+			})
 		})
 	}
 
@@ -1010,37 +789,22 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 			return ""
 		}
 
-		// 尝试从任务的 apiConversationHistory 中获取最后的助手响应
-		if (task.apiConversationHistory && Array.isArray(task.apiConversationHistory)) {
-			// 从后往前查找最后一个 assistant 角色的消息
-			for (let i = task.apiConversationHistory.length - 1; i >= 0; i--) {
-				const message = task.apiConversationHistory[i]
-				if (message.role === "assistant") {
-					// 如果内容是数组（多部分内容）
-					if (Array.isArray(message.content)) {
-						// 合并所有文本部分
-						return message.content
-							.filter((part: any) => part.type === "text")
-							.map((part: any) => part.text)
-							.join("\n")
-					} else if (typeof message.content === "string") {
-						return message.content
-					}
-				}
-			}
-		}
-
-		// 如果没有找到，尝试从 clineMessages 获取
+		// 从 clineMessages 获取最后的文本消息
 		if (task.clineMessages && Array.isArray(task.clineMessages)) {
-			// 从后往前查找最后一个 say 类型的消息
-			for (let i = task.clineMessages.length - 1; i >= 0; i--) {
-				const message = task.clineMessages[i]
-				if (message.type === "say" && message.say === "text") {
-					return message.text || ""
-				}
+			// 从后往前查找后两个 say 类型的文本消息
+			const messages = [...task.clineMessages]
+				.reverse()
+				.filter((msg) => msg.type === "say" && msg.text)
+				.slice(0, 4) // 取前四个（已经是倒序，所以是最后四个）
+			// 最后一个消息可能不会输出文件列表，所以后两个
+			if (messages.length > 0) {
+				// 合并后两个消息的文本（倒序回来，保持原始顺序）
+				return messages
+					.reverse()
+					.map((msg) => msg.text)
+					.join("\n")
 			}
 		}
-
 		return ""
 	}
 
@@ -1064,19 +828,17 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 				task.enabled = false
 				task.status = SubTaskStatus.CANCELLED
 				task.endTime = Date.now()
-				this.provider?.log(`[Control] Task cancelled by user: ${task.filePath}`)
 			} else {
 				// 从禁用变为启用：恢复为PENDING
 				task.enabled = true
 				task.status = SubTaskStatus.PENDING
 				task.error = undefined
 				task.endTime = undefined
-				this.provider?.log(`[Control] Task re-enabled: ${task.filePath}`)
 			}
 
 			// 发送更新通知
 			this.sendProgressUpdate({
-				status: this.currentTask.isRuleMode ? ControlTaskStatus.PROCESSING : ControlTaskStatus.PROCESSING,
+				status: ControlTaskStatus.PROCESSING,
 				currentFileIndex: this.currentSubTaskIndex + 1,
 				totalFiles: this.currentTask.subTasks.length,
 				completedCount: this.currentTask.subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
@@ -1092,11 +854,10 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 			task.status = SubTaskStatus.PENDING
 			task.error = undefined
 			task.endTime = undefined
-			this.provider?.log(`[Control] Task re-enabled from cancelled: ${task.filePath}`)
 
 			// 发送更新通知
 			this.sendProgressUpdate({
-				status: this.currentTask.isRuleMode ? ControlTaskStatus.PROCESSING : ControlTaskStatus.PROCESSING,
+				status: ControlTaskStatus.PROCESSING,
 				currentFileIndex: this.currentSubTaskIndex + 1,
 				totalFiles: this.currentTask.subTasks.length,
 				completedCount: this.currentTask.subTasks.filter((t) => t.status === SubTaskStatus.COMPLETED).length,
@@ -1114,7 +875,6 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 			return
 		}
 
-		this.provider?.log("[Control] Terminating all tasks...")
 		this.shouldCancel = true
 		this.isProcessing = false
 
@@ -1137,14 +897,49 @@ ${files.length > 10 ? `\n... 还有 ${files.length - 10} 个文件` : ""}
 			message: "任务已终止",
 		})
 
-		this.provider?.log("[Control] All tasks terminated")
-
 		// 清理状态
 		this.cleanup()
 
-		// 切换回 Loop 界面
+		// 切换回 Control 界面并清理
+		await this.switchToControlViewAndCleanup()
+	}
+
+	/**
+	 * 跳转到指定任务并隐藏 control 界面
+	 */
+	private async showTaskAndHideControl(taskId: string): Promise<void> {
+		if (!this.provider) {
+			return
+		}
+
+		// 先跳转到对话任务
+		await this.provider.showTaskWithId(taskId)
+		await new Promise((resolve) => setTimeout(resolve, 25))
+		// 然后隐藏 control 界面
+		await this.provider.postMessageToWebview({
+			type: "action",
+			action: "hideControlView",
+		})
+	}
+
+	/**
+	 * 切换回 Control 界面并执行清理
+	 * 封装了清理任务栈 + 刷新工作空间 + 跳转的完整流程
+	 */
+	private async switchToControlViewAndCleanup(): Promise<void> {
+		if (!this.provider) {
+			return
+		}
+
+		// 等待一小段时间确保进度更新消息被处理
 		await new Promise((resolve) => setTimeout(resolve, 100))
-		await this.provider?.postMessageToWebview({
+
+		// 先执行清理：移除任务栈并刷新工作空间
+		await this.provider.removeClineFromStack()
+		await this.provider.refreshWorkspace()
+
+		// 最后切换回 Control 界面
+		await this.provider.postMessageToWebview({
 			type: "action",
 			action: "controlButtonClicked",
 		})

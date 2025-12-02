@@ -95,6 +95,7 @@ export interface CreateTaskOptions {
 	useZgsmCustomConfig?: boolean
 	zgsmCodebaseIndexEnabled?: boolean
 	zgsmWorkflowMode?: string
+	highListFilesLimit?: boolean // 是否使用高文件限制（用于 Control 模式文件发现任务）
 }
 
 export enum TaskStatus {

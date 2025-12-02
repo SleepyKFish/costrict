@@ -176,6 +176,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly parentTask: Task | undefined = undefined
 	readonly taskNumber: number
 	readonly workspacePath: string
+	readonly highListFilesLimit: boolean // 是否使用高文件限制（用于 Control 模式文件发现任务）
 
 	/**
 	 * The mode associated with this task. Persisted across sessions
@@ -353,6 +354,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		initialTodos,
 		workspacePath,
 		zgsmWorkflowMode,
+		highListFilesLimit = false,
 	}: TaskOptions) {
 		super()
 
@@ -440,6 +442,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		this.parentTask = parentTask
 		this.taskNumber = taskNumber
+		this.highListFilesLimit = highListFilesLimit
 
 		// Store the task's mode when it's created.
 		// For history items, use the stored mode; for new tasks, we'll set it

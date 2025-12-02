@@ -84,7 +84,6 @@ export interface ExtractedPathInfo {
  */
 export interface ParsedRules {
 	isRuleMode: boolean // 是否为规则模式
-	discoveryRule?: string // 文件发现规则（以 # 开头）
-	processingRule?: string // 文件处理规则（以 $ 开头）
-	originalPrompt?: string // 原始提示词（传统模式）
+	discoveryRule?: string // 文件发现规则
+	processingRule?: string // 文件处理规则
 }

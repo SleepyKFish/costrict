@@ -19,13 +19,12 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 	const textAreaRef = useRef<HTMLTextAreaElement>(null)
 
 	const [userPrompt, setUserPrompt] = useState("")
-	const [discoveryRule, setDiscoveryRule] = useState("")
-	const [processingRule, setProcessingRule] = useState("")
 	const [progress, setProgress] = useState<ControlTaskProgress | null>(null)
 	const [subTasks, setSubTasks] = useState<SubTask[]>([])
 	const [isStarted, setIsStarted] = useState(false)
-	const [useRuleMode, setUseRuleMode] = useState(false) // 是否使用规则模式
 	const [selectedImages, setSelectedImages] = useState<string[]>([])
+	const [displayMessage, setDisplayMessage] = useState<string>("")
+	const messageTimerRef = useRef<NodeJS.Timeout | null>(null)
 
 	// 处理来自扩展的消息
 	useEffect(() => {
@@ -132,47 +131,81 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 		}
 	}, [isHidden])
 
-	// 开始 Control 任务
-	const handleStartTask = useCallback(() => {
-		if (useRuleMode) {
-			// 规则模式：需要两个规则都输入
-			if (!discoveryRule.trim() || !processingRule.trim()) {
-				vscode.postMessage({
-					type: "showWarning",
-					text: "请输入文件发现规则和文件处理规则",
-				})
-				return
-			}
-
-			setIsStarted(true)
-			vscode.postMessage({
-				type: "startControlTask",
-				text: `#${discoveryRule.trim()}\n$${processingRule.trim()}`,
-			})
-		} else {
-			// 传统模式：使用单一提示词
-			if (!userPrompt.trim()) {
-				vscode.postMessage({
-					type: "showWarning",
-					text: "请输入提示词",
-				})
-				return
-			}
-
-			setIsStarted(true)
-			vscode.postMessage({
-				type: "startControlTask",
-				text: userPrompt,
-			})
+	// 处理状态栏消息显示逻辑：优先显示正在执行的任务
+	useEffect(() => {
+		// 清除之前的定时器
+		if (messageTimerRef.current) {
+			clearTimeout(messageTimerRef.current)
+			messageTimerRef.current = null
 		}
-	}, [userPrompt, discoveryRule, processingRule, useRuleMode])
 
-	// 继续下一个任务
-	const handleContinueNext = useCallback(() => {
+		if (!progress) {
+			setDisplayMessage("")
+			return
+		}
+
+		// 查找正在执行的任务
+		const runningTask = subTasks.find((t) => t.status === SubTaskStatus.RUNNING)
+
+		if (runningTask) {
+			// 如果有正在执行的任务，优先显示它
+			const runningMessage = `正在处理: ${runningTask.filePath}`
+			setDisplayMessage(runningMessage)
+
+			// 如果 progress.message 不是正在执行的消息，说明是临时状态消息
+			// 显示 1 秒后切换回正在执行的任务
+			if (progress.message && progress.message !== runningMessage) {
+				setDisplayMessage(progress.message)
+				messageTimerRef.current = setTimeout(() => {
+					setDisplayMessage(runningMessage)
+				}, 1000)
+			}
+		} else {
+			// 没有正在执行的任务，直接显示 progress.message
+			setDisplayMessage(progress.message || "")
+		}
+
+		// 清理函数
+		return () => {
+			if (messageTimerRef.current) {
+				clearTimeout(messageTimerRef.current)
+				messageTimerRef.current = null
+			}
+		}
+	}, [progress, subTasks])
+
+	// 开始 Control 任务（仅支持规则模式）
+	const handleStartTask = useCallback(() => {
+		const input = userPrompt.trim()
+
+		if (!input) {
+			vscode.postMessage({
+				type: "showWarning",
+				text: "请输入任务内容",
+			})
+			return
+		}
+
+		// 检测是否为规则模式（只检查关键词，不限定格式）
+		const hasDiscoveryRule = input.includes("文件发现规则")
+		const hasProcessingRule = input.includes("文件处理规则")
+
+		// 只支持规则模式
+		if (!hasDiscoveryRule || !hasProcessingRule) {
+			vscode.postMessage({
+				type: "showWarning",
+				text: "请使用规则模式：\n#文件发现规则：[描述要处理的文件]\n#文件处理规则：[描述处理方式]",
+			})
+			return
+		}
+
+		// 直接发送用户输入的原始内容，让后端解析
+		setIsStarted(true)
 		vscode.postMessage({
-			type: "continueNextControlTask",
+			type: "startControlTask",
+			text: input,
 		})
-	}, [])
+	}, [userPrompt])
 
 	// 切换任务启用状态
 	const handleToggleTaskEnabled = useCallback((taskId: string) => {
@@ -192,24 +225,12 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 	// 重新开始
 	const handleReset = useCallback(() => {
 		setUserPrompt("")
-		setDiscoveryRule("")
-		setProcessingRule("")
 		setProgress(null)
 		setSubTasks([])
 		setIsStarted(false)
 		vscode.postMessage({
 			type: "resetControl",
 		})
-	}, [])
-
-	// 点击子任务，跳转到对应的对话
-	const handleTaskClick = useCallback((task: SubTask) => {
-		if (task.taskId) {
-			vscode.postMessage({
-				type: "showTaskWithId",
-				text: task.taskId,
-			})
-		}
 	}, [])
 
 	// 返回到对话界面
@@ -266,33 +287,7 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 			{/* 头部标题栏 */}
 			<div className="px-5 py-3 border-b border-vscode-editorGroup-border flex-shrink-0">
 				<div className="flex items-center justify-between">
-					<div className="flex items-center gap-3">
-						<h2 className="text-base font-semibold">Control 批量处理</h2>
-						{!isStarted && (
-							<div className="flex items-center gap-2">
-								<button
-									className={cn(
-										"px-2 py-0.5 rounded text-xs transition-colors",
-										!useRuleMode
-											? "bg-vscode-button-background text-vscode-button-foreground"
-											: "bg-vscode-input-background text-vscode-input-foreground border border-vscode-input-border hover:bg-vscode-list-hoverBackground",
-									)}
-									onClick={() => setUseRuleMode(false)}>
-									传统模式
-								</button>
-								<button
-									className={cn(
-										"px-2 py-0.5 rounded text-xs transition-colors",
-										useRuleMode
-											? "bg-vscode-button-background text-vscode-button-foreground"
-											: "bg-vscode-input-background text-vscode-input-foreground border border-vscode-input-border hover:bg-vscode-list-hoverBackground",
-									)}
-									onClick={() => setUseRuleMode(true)}>
-									规则模式
-								</button>
-							</div>
-						)}
-					</div>
+					<h2 className="text-base font-semibold">Control 批量处理</h2>
 					<button
 						onClick={handleBackToChat}
 						className="text-xs text-vscode-textLink-foreground hover:underline flex items-center gap-1">
@@ -305,16 +300,116 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 			{/* 进度信息区域 */}
 			{progress && (
 				<div className="px-5 py-3 flex-shrink-0 border-b border-vscode-editorGroup-border bg-vscode-editor-background">
-					{/* 状态信息 */}
-					<div className="mb-2">
-						<div className="flex items-center justify-between mb-2">
-							<div className="text-sm font-medium">{progress.message || "处理中..."}</div>
+					{/* 特殊状态提示框 */}
+					{progress.status === ControlTaskStatus.DISCOVERING_FILES && (
+						<div className="mb-3 p-3 rounded-lg bg-vscode-sideBar-background border border-vscode-editorGroup-border">
+							<div className="text-sm font-semibold mb-1 flex items-center gap-2">
+								<i className="codicon codicon-search text-blue-500"></i>
+								正在发现文件
+								<span className="inline-flex gap-1 items-center">
+									<span
+										className="inline-block w-1.5 h-1.5 bg-blue-500 rounded-full"
+										style={{
+											animation: "pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+										}}></span>
+									<span
+										className="inline-block w-1.5 h-1.5 bg-blue-500 rounded-full"
+										style={{
+											animation: "pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+											animationDelay: "0.2s",
+										}}></span>
+									<span
+										className="inline-block w-1.5 h-1.5 bg-blue-500 rounded-full"
+										style={{
+											animation: "pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+											animationDelay: "0.4s",
+										}}></span>
+								</span>
+							</div>
 							<div className="text-xs text-vscode-descriptionForeground">
-								{progress.completedCount + progress.failedCount} / {progress.totalFiles}
+								AI 正在根据您的文件发现规则分析项目结构，查找需要处理的文件...
 							</div>
 						</div>
+					)}
 
-						{/* 进度条 */}
+					{progress.status === ControlTaskStatus.PARSING && (
+						<div className="mb-3 p-3 rounded-lg bg-vscode-sideBar-background border border-vscode-editorGroup-border">
+							<div className="text-sm font-semibold mb-1 flex items-center gap-2">
+								<i className="codicon codicon-file-code text-yellow-500"></i>
+								正在解析文件列表
+								<span className="inline-flex gap-1 items-center">
+									<span
+										className="inline-block w-1.5 h-1.5 bg-yellow-500 rounded-full"
+										style={{
+											animation: "pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+										}}></span>
+									<span
+										className="inline-block w-1.5 h-1.5 bg-yellow-500 rounded-full"
+										style={{
+											animation: "pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+											animationDelay: "0.2s",
+										}}></span>
+									<span
+										className="inline-block w-1.5 h-1.5 bg-yellow-500 rounded-full"
+										style={{
+											animation: "pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+											animationDelay: "0.4s",
+										}}></span>
+								</span>
+							</div>
+							<div className="text-xs text-vscode-descriptionForeground">
+								正在从 AI 响应中提取并验证文件列表...
+							</div>
+						</div>
+					)}
+
+					{progress.status === ControlTaskStatus.GENERATING_TEMPLATE && (
+						<div className="mb-3 p-3 rounded-lg bg-vscode-sideBar-background border border-vscode-editorGroup-border">
+							<div className="text-sm font-semibold mb-1 flex items-center gap-2">
+								<i className="codicon codicon-wand text-blue-500"></i>
+								正在生成指令模板
+								<span className="inline-flex gap-1 items-center">
+									<span
+										className="inline-block w-1.5 h-1.5 bg-blue-500 rounded-full"
+										style={{
+											animation: "pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+										}}></span>
+									<span
+										className="inline-block w-1.5 h-1.5 bg-blue-500 rounded-full"
+										style={{
+											animation: "pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+											animationDelay: "0.2s",
+										}}></span>
+									<span
+										className="inline-block w-1.5 h-1.5 bg-blue-500 rounded-full"
+										style={{
+											animation: "pulse 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+											animationDelay: "0.4s",
+										}}></span>
+								</span>
+							</div>
+							<div className="text-xs text-vscode-descriptionForeground">
+								AI 正在根据您的处理规则生成可复用的指令模板，这将应用到所有文件...
+							</div>
+						</div>
+					)}
+
+					{/* 状态信息（特殊状态下不显示，避免重复） */}
+					{progress.status !== ControlTaskStatus.DISCOVERING_FILES &&
+						progress.status !== ControlTaskStatus.PARSING &&
+						progress.status !== ControlTaskStatus.GENERATING_TEMPLATE && (
+							<div className="mb-2">
+								<div className="flex items-center justify-between mb-2">
+									<div className="text-sm font-medium">{displayMessage || "处理中..."}</div>
+									<div className="text-xs text-vscode-descriptionForeground">
+										{progress.completedCount + progress.failedCount} / {progress.totalFiles}
+									</div>
+								</div>
+							</div>
+						)}
+
+					{/* 进度条（始终显示） */}
+					<div className="mb-2">
 						<div className="w-full h-2 bg-vscode-progressBar-background rounded-full overflow-hidden">
 							<div
 								className="h-full bg-vscode-progressBar-foreground transition-all duration-300"
@@ -358,8 +453,8 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 							<VSCodeButton onClick={handleReset}>结束任务</VSCodeButton>
 						)}
 
-						{/* 正在生成指令模板 */}
-						{progress && progress.status === ControlTaskStatus.GENERATING_TEMPLATE && (
+						{/* 特殊状态下的按钮 */}
+						{progress && progress.status === ControlTaskStatus.DISCOVERING_FILES && (
 							<VSCodeButton onClick={handleCancelTask} appearance="secondary">
 								终止任务
 							</VSCodeButton>
@@ -368,11 +463,6 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 						{/* 任务进行中的按钮 */}
 						{progress && progress.status === ControlTaskStatus.PROCESSING && (
 							<>
-								{/* 继续下一个任务按钮（有待处理任务时显示） */}
-								{subTasks.some((t) => t.enabled && t.status === SubTaskStatus.PENDING) && (
-									<VSCodeButton onClick={handleContinueNext}>开始下一个任务</VSCodeButton>
-								)}
-
 								{/* 终止任务按钮 */}
 								<VSCodeButton onClick={handleCancelTask} appearance="secondary">
 									终止任务
@@ -393,12 +483,8 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 								<div
 									key={task.id}
 									className={cn(
-										"p-3 rounded-lg border transition-colors",
-										task.status === SubTaskStatus.RUNNING
-											? "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
-											: task.status === SubTaskStatus.CANCELLED
-												? "border-vscode-editorGroup-border bg-gray-100 dark:bg-gray-800/50 opacity-60"
-												: "border-vscode-editorGroup-border bg-vscode-editor-background",
+										"p-3 rounded-lg border transition-colors border-vscode-editorGroup-border bg-vscode-editor-background",
+										task.status === SubTaskStatus.CANCELLED && "opacity-60",
 									)}>
 									<div className="flex items-center justify-between mb-1">
 										<div className="flex items-center gap-2 flex-1 min-w-0">
@@ -407,7 +493,7 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 												progress.status === ControlTaskStatus.PROCESSING &&
 												(task.status === SubTaskStatus.PENDING ||
 													task.status === SubTaskStatus.CANCELLED) &&
-												task.filePath !== "[文件发现任务]" && (
+												task.filePath !== "文件发现任务" && (
 													<button
 														className={cn(
 															"flex-shrink-0 w-4 h-4 rounded border-2 flex items-center justify-center transition-all cursor-pointer",
@@ -445,31 +531,16 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 
 											<div
 												className={cn(
-													"flex-1 text-sm font-mono truncate cursor-pointer",
+													"flex-1 text-sm font-mono truncate",
 													task.status === SubTaskStatus.CANCELLED &&
 														"line-through opacity-60",
 												)}
-												title={task.filePath}
-												onClick={() => task.taskId && handleTaskClick(task)}>
+												title={task.filePath}>
 												{task.filePath}
 											</div>
-
-											{task.taskId && (
-												<i
-													className="codicon codicon-link-external text-xs text-vscode-descriptionForeground cursor-pointer"
-													title="点击查看对话"
-													onClick={() => handleTaskClick(task)}></i>
-											)}
 										</div>
 										{renderStatusBadge(task.status)}
 									</div>
-
-									{/* 显示错误信息（文件发现任务不显示） */}
-									{task.error && task.filePath !== "[文件发现任务]" && (
-										<div className="mt-2 text-xs text-red-600 bg-red-50 dark:bg-red-900/20 p-2 rounded">
-											{task.error}
-										</div>
-									)}
 
 									{/* 显示执行时间 */}
 									{task.startTime && task.endTime && (
@@ -483,28 +554,44 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 					</div>
 				) : !isStarted && !progress ? (
 					// 欢迎页面
-					<div className="flex items-center justify-center h-full px-5 py-10">
+					<div className="flex items-start justify-center h-full px-5 pt-20 pb-8">
 						<div className="text-center text-vscode-descriptionForeground max-w-md">
-							<div className="text-4xl mb-4">🔄</div>
-							<h3 className="text-base font-semibold mb-2">批量处理文件</h3>
-							<p className="text-sm mb-4">支持两种模式：</p>
-							<div className="text-left text-xs space-y-2 bg-vscode-sideBar-background p-3 rounded border border-vscode-editorGroup-border">
+							<div className="text-5xl mb-4">🔄</div>
+							<h3 className="text-base font-semibold mb-2">Control 批量处理</h3>
+							<p className="text-sm mb-4 leading-relaxed">
+								通过明确的规则精准控制批量任务，AI 自动生成任务列表逐个处理
+								<br />
+								每个任务关联独立对话，可随时查看详情、暂停或跳过任务
+							</p>
+							<div className="text-left text-xs space-y-3 bg-vscode-sideBar-background p-3 rounded border border-vscode-editorGroup-border mb-4">
 								<div>
-									<strong>传统模式：</strong>
-									<br />
-									使用单一提示词，支持 <code>@/path</code> 指定目录
+									<strong className="text-vscode-textLink-foreground">输入格式：</strong>
+									<div className="mt-2 font-mono text-vscode-descriptionForeground bg-vscode-editor-background p-2 rounded">
+										#文件发现规则：[描述要处理的文件]
+										<br />
+										#文件处理规则：[描述处理方式]
+									</div>
 								</div>
-								<div>
-									<strong>规则模式：</strong>
-									<br />
-									<span className="text-blue-500">#</span> 文件发现规则 - 确定要处理的文件
-									<br />
-									<span className="text-green-500">$</span> 文件处理规则 - 描述如何处理每个文件
+								<div className="pt-2 border-t border-vscode-editorGroup-border">
+									<div className="flex items-center gap-2 text-vscode-descriptionForeground">
+										<span>
+											支持{" "}
+											<code className="px-1 py-0.5 bg-vscode-editor-background rounded">
+												.gitignore
+											</code>
+											、
+											<code className="px-1 py-0.5 bg-vscode-editor-background rounded">
+												.rooignore
+											</code>{" "}
+											和{" "}
+											<code className="px-1 py-0.5 bg-vscode-editor-background rounded">
+												.coignore
+											</code>{" "}
+											文件过滤
+										</span>
+									</div>
 								</div>
 							</div>
-							<p className="text-xs mt-3 text-vscode-descriptionForeground">
-								💡 支持通过 .coignore 文件过滤不需要处理的文件
-							</p>
 						</div>
 					</div>
 				) : null}
@@ -516,66 +603,23 @@ const ControlView: React.FC<ControlViewProps> = ({ isHidden, onSwitchToChat }) =
 			{/* 底部输入区域 */}
 			{!isStarted && (
 				<div className="flex-shrink-0 border-t border-vscode-editorGroup-border">
-					{!useRuleMode ? (
-						// 传统模式 - 使用ChatTextArea（ChatTextArea自带padding，无需额外包装）
-						<ChatTextArea
-							ref={textAreaRef}
-							inputValue={userPrompt}
-							setInputValue={setUserPrompt}
-							sendingDisabled={isProcessing}
-							selectApiConfigDisabled={true}
-							placeholderText="输入您的需求，将对指定目录下的所有文件进行处理。例如：&#10;@/src 添加详细注释&#10;如果不指定目录，将处理整个项目"
-							selectedImages={selectedImages}
-							setSelectedImages={setSelectedImages}
-							onSend={handleStartTask}
-							onSelectImages={() => {}}
-							shouldDisableImages={true}
-							mode={mode}
-							setMode={setMode}
-							modeShortcutText=""
-							hoverPreviewMap={new Map()}
-						/>
-					) : (
-						// 规则模式 - 显示两个输入框
-						<div className="px-5 py-4 space-y-3">
-							<div>
-								<label className="block text-xs font-medium mb-1 flex items-center gap-1">
-									<span className="text-blue-500">#</span>
-									文件发现规则
-								</label>
-								<textarea
-									className="w-full min-h-[80px] p-2 rounded border border-vscode-input-border bg-vscode-input-background text-vscode-input-foreground resize-y font-mono text-xs"
-									placeholder="描述要处理哪些文件，例如：找出所有 src 目录下的 TypeScript 文件"
-									value={discoveryRule}
-									onChange={(e) => setDiscoveryRule(e.target.value)}
-									disabled={isProcessing}
-								/>
-							</div>
-							<div>
-								<label className="block text-xs font-medium mb-1 flex items-center gap-1">
-									<span className="text-green-500">$</span>
-									文件处理规则
-								</label>
-								<textarea
-									className="w-full min-h-[80px] p-2 rounded border border-vscode-input-border bg-vscode-input-background text-vscode-input-foreground resize-y font-mono text-xs"
-									placeholder="描述如何处理每个文件，例如：为所有导出的函数添加 JSDoc 注释"
-									value={processingRule}
-									onChange={(e) => setProcessingRule(e.target.value)}
-									disabled={isProcessing}
-								/>
-							</div>
-							<div className="flex items-center justify-between">
-								<div className="text-xs text-vscode-descriptionForeground">
-									💡 规则模式使用两步处理：先发现文件，再逐个处理
-								</div>
-								<VSCodeButton
-									onClick={handleStartTask}
-									disabled={!discoveryRule.trim() || !processingRule.trim()}>
-									开始处理
-								</VSCodeButton>
-							</div>
-						</div>
-					)}
+					<ChatTextArea
+						ref={textAreaRef}
+						inputValue={userPrompt}
+						setInputValue={setUserPrompt}
+						sendingDisabled={isProcessing}
+						selectApiConfigDisabled={true}
+						placeholderText="请输入你的任务..."
+						selectedImages={selectedImages}
+						setSelectedImages={setSelectedImages}
+						onSend={handleStartTask}
+						onSelectImages={() => {}}
+						shouldDisableImages={true}
+						mode={mode}
+						setMode={setMode}
+						modeShortcutText=""
+						hoverPreviewMap={new Map()}
+					/>
 				</div>
 			)}
 		</div>

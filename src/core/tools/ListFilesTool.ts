@@ -44,7 +44,9 @@ export class ListFilesTool extends BaseTool<"list_files"> {
 			const absolutePath = path.resolve(task.cwd, relDirPath)
 			const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
 
-			const [files, didHitLimit] = await listFiles(absolutePath, recursive || false, 200)
+			// 根据任务标记决定文件限制：Control 模式文件发现任务使用更高限制，默认1000
+			const fileLimit = task.highListFilesLimit ? 1000 : 200
+			const [files, didHitLimit] = await listFiles(absolutePath, recursive || false, fileLimit)
 			const { showRooIgnoredFiles = false } = (await task.providerRef.deref()?.getState()) ?? {}
 
 			const result = formatResponse.formatFilesList(
