@@ -31,8 +31,9 @@ import { ReauthConfirmationDialog } from "./components/chat/ReauthConfirmationDi
 import { ZgsmCodebaseDisableConfirmDialog } from "./components/settings/ZgsmCodebaseDisableConfirmDialog"
 import { useTranslation } from "react-i18next"
 
+// costrict change - used for the loop mode of costrict
 // type Tab = "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "cloud" | "zgsm-account" | "codeReview"
-type Tab = "settings" | "history" | "chat" | "marketplace" | "cloud" | "zgsm-account" | "codeReview"
+type Tab = "settings" | "history" | "chat" | "marketplace" | "cloud" | "zgsm-account" | "codeReview" | "zgsmLoop"
 
 interface HumanRelayDialogState {
 	isOpen: boolean
@@ -170,6 +171,14 @@ const App = () => {
 			const message: ExtensionMessage = e.data
 
 			if (message.type === "action" && message.action) {
+				// costrict change - used for the loop mode of costrict
+				// 特殊处理：zgsmLoopButtonClicked 不切换 tab，而是通知 ChatView 显示 Loop 子视图
+				if (message.action === "zgsmLoopButtonClicked") {
+					switchTab("chat") // 确保在 chat tab
+					// 通知 ChatView 显示 Loop
+					chatViewRef.current?.showZgsmLoopView?.()
+					return
+				}
 				// Handle switchTab action with tab parameter
 				if (message.action === "switchTab" && message.tab) {
 					const targetTab = message.tab as Tab

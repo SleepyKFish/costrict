@@ -183,6 +183,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly parentTask: Task | undefined = undefined
 	readonly taskNumber: number
 	readonly workspacePath: string
+	// costrict change
+	readonly zgsmHighListFilesLimit: boolean // Whether to use high file limit (for File Discovery Task in Loop mode of costrict)
 
 	/**
 	 * The mode associated with this task. Persisted across sessions
@@ -370,6 +372,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		workspacePath,
 		zgsmWorkflowMode,
 		initialStatus,
+		// costrict change
+		zgsmHighListFilesLimit = false,
 	}: TaskOptions) {
 		super()
 
@@ -458,6 +462,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.parentTask = parentTask
 		this.taskNumber = taskNumber
 		this.initialStatus = initialStatus
+		// costrict change
+		this.zgsmHighListFilesLimit = zgsmHighListFilesLimit
 
 		// Store the task's mode when it's created.
 		// For history items, use the stored mode; for new tasks, we'll set it
