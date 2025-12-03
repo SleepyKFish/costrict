@@ -200,6 +200,14 @@ export interface WebviewMessage {
 		| "browserPanelDidLaunch"
 		| "openDebugApiHistory"
 		| "openDebugUiHistory"
+		// costrict change - used for the loop mode of costrict
+		| "zgsmStartLoopTask"
+		| "zgsmContinueNextLoopTask"
+		| "zgsmToggleLoopTaskEnabled"
+		| "zgsmCancelLoopTask"
+		| "zgsmResetLoop"
+		| "zgsmRequestLoopState"
+		| "zgsmShowLoopWarning"
 	text?: string
 	editedMessageContent?: string
 	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "cloud" | "zgsm-account"
@@ -234,6 +242,8 @@ export interface WebviewMessage {
 	source?: "global" | "project"
 	requestId?: string
 	ids?: string[]
+	// costrict change - used for the loop mode of costrict
+	zgsmLoopTaskId?: string
 	hasSystemPromptOverride?: boolean
 	terminalOperation?: "continue" | "abort"
 	terminalPid?: number

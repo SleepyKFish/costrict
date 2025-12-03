@@ -49,7 +49,7 @@ import { t } from "../../i18n"
 import prettyBytes from "pretty-bytes"
 import { ensureProjectWikiSubtasksExists } from "./wiki/projectWikiHelpers"
 import { isJetbrainsPlatform } from "../../utils/platform"
-
+import { initLoop } from "./loop"
 const HISTORY_WARN_SIZE = 1000 * 1000 * 1000 * 3
 
 /**
@@ -158,6 +158,8 @@ export async function activate(
 		provider.log("Failed to check login status at startup: " + error.message)
 	}
 	initCodeReview(context, provider, outputChannel)
+	// costrict change - used for the loop mode of costrict
+	initLoop(context, provider, outputChannel)
 	CompletionStatusBar.create(context)
 	initTelemetry(provider)
 

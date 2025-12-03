@@ -179,6 +179,9 @@ export interface ExtensionStateContextType extends ExtensionState {
 	notices?: Array<{ title: string; type: "always" | "once"; content: string; timestamp: number; expired: number }>
 	noticesEnabled: boolean
 	setNoticesEnabled: (value: boolean) => void
+	// costrict change - used for the loop mode of costrict
+	isInZgsmLoopView: boolean
+	setIsInZgsmLoopView: (value: boolean) => void
 }
 
 export const ExtensionStateContext = createContext<ExtensionStateContextType | undefined>(undefined)
@@ -299,6 +302,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	})
 
 	const [didHydrateState, setDidHydrateState] = useState(false)
+	// costrict change - used for the loop mode of costrict
+	const [isInZgsmLoopView, setIsInZgsmLoopView] = useState(false)
 	const [showWelcome, setShowWelcome] = useState(false)
 	const [theme, setTheme] = useState<any>(undefined)
 	const [filePaths, setFilePaths] = useState<string[]>([])
@@ -682,6 +687,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		notices,
 		noticesEnabled,
 		setNoticesEnabled,
+		// costrict change - used for the loop mode of costrict
+		isInZgsmLoopView,
+		setIsInZgsmLoopView,
 	}
 
 	return <ExtensionStateContext.Provider value={contextValue}>{children}</ExtensionStateContext.Provider>

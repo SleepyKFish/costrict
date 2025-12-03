@@ -56,11 +56,18 @@ export class ListFilesTool extends BaseTool<"list_files"> {
 			const alwaysIncludeFileDetails =
 				Experiments.isEnabled(experiments ?? {}, EXPERIMENT_IDS.ALWAYS_INCLUDE_FILE_DETAILS) ??
 				apiConfiguration?.apiProvider === "zgsm"
-			const [files, didHitLimit] = await listFiles(
-				absolutePath,
-				recursive || false,
-				(alwaysIncludeFileDetails ? 3 : 1) * maxWorkspaceFiles,
-			)
+
+			// costrict change
+			// Base limit: dynamically calculated based on whether file details are required
+			const baseLimit = (alwaysIncludeFileDetails ? 3 : 1) * maxWorkspaceFiles
+			// zgsmLoopView limit: choose high or low mode based on task settings
+			const zgsmLimit = task.zgsmHighListFilesLimit ? 1000 : 200
+
+			// Use the larger value between the two
+			const zgsmFileLimit = Math.max(baseLimit, zgsmLimit)
+
+			// Use the unified zgsmFileLimit when calling listFiles
+			const [files, didHitLimit] = await listFiles(absolutePath, recursive || false, zgsmFileLimit)
 
 			const result = formatResponse.formatFilesList(
 				absolutePath,

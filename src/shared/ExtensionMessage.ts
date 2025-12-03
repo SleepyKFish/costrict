@@ -150,6 +150,9 @@ export interface ExtensionMessage {
 		| "interactionRequired"
 		| "browserSessionUpdate"
 		| "browserSessionNavigate"
+		// costrict change - used for the loop mode of costrict
+		| "zgsmLoopProgress"
+		| "zgsmLoopStateResponse"
 	text?: string
 	payload?: any // Add a generic payload for now, can refine later
 	// Checkpoint warning message
@@ -170,6 +173,9 @@ export interface ExtensionMessage {
 		| "switchTab"
 		| "toggleAutoApprove"
 		| "codeReviewButtonClicked"
+		// costrict change - used for the loop mode of costrict
+		| "zgsmLoopButtonClicked"
+		| "zgsmHideLoopView"
 	invoke?:
 		| "newChat"
 		| "sendMessage"
@@ -247,6 +253,10 @@ export interface ExtensionMessage {
 	browserSessionMessages?: ClineMessage[] // For browser session panel updates
 	isBrowserSessionActive?: boolean // For browser session panel updates
 	stepIndex?: number // For browserSessionNavigate: the target step index to display
+	// costrict change - used for the loop mode of costrict
+	zgsmLoopProgress?: any // For zgsmLoopProgress
+	zgsmLoopSubTasks?: any[] // For zgsmLoopProgress sub tasks list
+	zgsmLoopTask?: any // For zgsmLoopStateResponse - current loop task state
 }
 
 export type ExtensionState = Pick<
