@@ -47,8 +47,14 @@ export const ModeSelector = ({
 	const selectedItemRef = React.useRef<HTMLDivElement>(null)
 	const scrollContainerRef = React.useRef<HTMLDivElement>(null)
 	const portalContainer = useRooPortal("roo-portal")
-	const { hasOpenedModeSelector, setHasOpenedModeSelector, zgsmCodeMode, setZgsmCodeMode, apiConfiguration } =
-		useExtensionState()
+	const {
+		hasOpenedModeSelector,
+		setHasOpenedModeSelector,
+		zgsmCodeMode,
+		setZgsmCodeMode,
+		apiConfiguration,
+		isInZgsmLoopView,
+	} = useExtensionState()
 	const { t } = useAppTranslation()
 	const switchMode = useCallback(
 		(slug: ZgsmCodeMode) => {
@@ -75,8 +81,19 @@ export const ModeSelector = ({
 			})
 			return
 		}
+		// costrict change - 禁止在 Loop 模式下切换到 strict
+		if (isInZgsmLoopView && zgsmCodeMode === "vibe") {
+			vscode.postMessage({
+				type: "zgsmProviderTip",
+				values: {
+					tipType: "info",
+					msg: "请先退出 Loop 模式，再切换到 Strict 模式",
+				},
+			})
+			return
+		}
 		switchMode(zgsmCodeMode === "vibe" ? "strict" : "vibe")
-	}, [apiConfiguration?.apiProvider, switchMode, t, zgsmCodeMode])
+	}, [apiConfiguration?.apiProvider, switchMode, t, zgsmCodeMode, isInZgsmLoopView])
 	const trackModeSelectorOpened = React.useCallback(() => {
 		// Track telemetry every time the mode selector is opened.
 		telemetryClient.capture(TelemetryEventName.MODE_SELECTOR_OPENED)
@@ -95,13 +112,28 @@ export const ModeSelector = ({
 			zgsmCodeMode,
 			apiConfiguration?.apiProvider,
 		)
-		return allModes.map((mode) => ({
+		const modesWithDescriptions = allModes.map((mode) => ({
 			...mode,
 			description:
 				t(`modes:descriptions.${mode.slug}`, {
 					defaultValue: customModePrompts?.[mode.slug]?.description,
 				}) ?? mode.description,
 		}))
+
+		// costrict change - used for the loop mode of costrict
+		// 添加 Loop 入口（作为特殊项，不是真正的 Mode）
+		// 只在 vibe 模式下显示，strict 模式下不显示
+		if (zgsmCodeMode === "vibe") {
+			const zgsmLoopEntry = {
+				slug: "__zgsm_loop__",
+				name: "🔄 Loop 循环处理",
+				description: "根据规则循环处理多个文件",
+				zgsmIsLoopEntry: true, // 标记为特殊的 Loop 入口
+			} as ModeConfig & { zgsmIsLoopEntry?: boolean }
+
+			return [...modesWithDescriptions, zgsmLoopEntry]
+		}
+		return modesWithDescriptions
 	}, [customModes, zgsmCodeMode, apiConfiguration?.apiProvider, t, customModePrompts])
 
 	// Find the selected mode.
@@ -164,8 +196,26 @@ export const ModeSelector = ({
 		searchInputRef.current?.focus()
 	}, [])
 
+	// costrict change - used for the loop mode of costrict
 	const handleSelect = React.useCallback(
 		(modeSlug: string) => {
+			// 特殊处理：如果选择的是 Loop 入口，跳转到 Loop 界面
+			if (modeSlug === "__zgsm_loop__") {
+				// 先关闭下拉框和清空搜索
+				setOpen(false)
+				setSearchValue("")
+				// 等待下拉框关闭动画完成后再跳转到 Loop 界面
+				setTimeout(() => {
+					window.postMessage(
+						{
+							type: "action",
+							action: "zgsmLoopButtonClicked",
+						},
+						"*",
+					)
+				}, 25)
+				return
+			}
 			onChange(modeSlug as Mode)
 			setOpen(false)
 			// Clear search after selection.
@@ -220,6 +270,19 @@ export const ModeSelector = ({
 			})
 		}
 	}, [open])
+
+	// costrict change - Listen for closeAllPopovers event to force close the popover(used for the loop mode of costrict)
+	React.useEffect(() => {
+		const handleCloseAll = () => {
+			setOpen(false)
+			setSearchValue("")
+		}
+
+		window.addEventListener("closeAllPopovers", handleCloseAll)
+		return () => {
+			window.removeEventListener("closeAllPopovers", handleCloseAll)
+		}
+	}, [])
 
 	// Determine if search should be shown.
 	const showSearch = !disableSearch && modes.length > SEARCH_THRESHOLD
@@ -295,6 +358,8 @@ export const ModeSelector = ({
 							<div className="py-1">
 								{filteredModes.map((mode) => {
 									const isSelected = mode.slug === value
+									// costrict change - used for the loop mode of costrict
+									const zgsmIsLoopEntry = (mode as any).zgsmIsLoopEntry === true
 									return (
 										<div
 											key={mode.slug}
@@ -303,9 +368,11 @@ export const ModeSelector = ({
 											className={cn(
 												"px-3 py-1.5 text-sm cursor-pointer flex items-center",
 												"hover:bg-vscode-list-hoverBackground",
-												isSelected
+												isSelected && !zgsmIsLoopEntry
 													? "bg-vscode-list-activeSelectionBackground text-vscode-list-activeSelectionForeground"
 													: "",
+												// costrict change - Loop 入口使用特殊样式(used for the loop mode of costrict)
+												zgsmIsLoopEntry && "border-t border-vscode-dropdown-border mt-1 pt-2",
 											)}
 											data-testid="mode-selector-item">
 											<div className="flex-1 min-w-0">
@@ -316,7 +383,9 @@ export const ModeSelector = ({
 													</div>
 												)}
 											</div>
-											{isSelected && <Check className="ml-auto size-4 p-0.5" />}
+											{isSelected && !zgsmIsLoopEntry && (
+												<Check className="ml-auto size-4 p-0.5" />
+											)}
 										</div>
 									)
 								})}

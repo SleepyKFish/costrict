@@ -16,7 +16,7 @@ export * from "./codelens"
 export * from "./base/common"
 export * from "./base/language"
 export * from "./commit"
-
+export * from "./loop"
 // Export data as a namespace to avoid conflicts
 export * as ZgsmData from "./base/data"
 

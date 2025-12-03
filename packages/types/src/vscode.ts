@@ -100,6 +100,11 @@ export const costrictCommandIds = [
 	"coworkflow.refreshCodeLens",
 	"coworkflow.refreshDecorations",
 	"coworkflow.runTest",
+	// costrict change - used for the loop mode of costrict
+	"zgsmLoopButtonClicked",
+	"zgsmStartLoopTask",
+	"zgsmCancelLoopTask",
+	"zgsmResetLoop",
 ] as const
 export type CostrictCommandId = (typeof costrictCommandIds)[number]
 export type CommandId = (typeof commandIds)[number]

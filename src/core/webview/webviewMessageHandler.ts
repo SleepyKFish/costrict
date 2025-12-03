@@ -499,6 +499,87 @@ export const webviewMessageHandler = async (
 		case "cancelReviewTask":
 			await CodeReviewService.getInstance().cancelCurrentTask()
 			break
+		// costrict change - used for the loop mode of costrict
+		case "zgsmStartLoopTask":
+			try {
+				const { LoopService } = await import("../costrict/loop")
+				const zgsmLoopService = LoopService.getInstance()
+				zgsmLoopService.setProvider(provider)
+				await zgsmLoopService.startLoopTask(message.text || "")
+			} catch (error) {
+				provider.log(`[Loop] Failed to start task: ${error}`)
+				vscode.window.showErrorMessage(
+					`Loop 任务启动失败: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
+			break
+		// costrict change - used for the loop mode of costrict
+		case "zgsmContinueNextLoopTask":
+			try {
+				const { LoopService } = await import("../costrict/loop")
+				const zgsmLoopService = LoopService.getInstance()
+				await zgsmLoopService.continueNextTask()
+			} catch (error) {
+				provider.log(`[Loop] Failed to continue next task: ${error}`)
+				vscode.window.showErrorMessage(
+					`继续任务失败: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
+			break
+		// costrict change - used for the loop mode of costrict
+		case "zgsmToggleLoopTaskEnabled":
+			try {
+				const { LoopService } = await import("../costrict/loop")
+				const zgsmLoopService = LoopService.getInstance()
+				zgsmLoopService.toggleTaskEnabled(message.zgsmLoopTaskId || "")
+			} catch (error) {
+				provider.log(`[Loop] Failed to toggle task enabled: ${error}`)
+			}
+			break
+		// costrict change - used for the loop mode of costrict
+		case "zgsmCancelLoopTask":
+			try {
+				const { LoopService } = await import("../costrict/loop")
+				const zgsmLoopService = LoopService.getInstance()
+				zgsmLoopService.cancelTask()
+			} catch (error) {
+				provider.log(`[Loop] Failed to cancel task: ${error}`)
+			}
+			break
+		// costrict change - used for the loop mode of costrict
+		case "zgsmResetLoop":
+			try {
+				const { LoopService } = await import("../costrict/loop")
+				const zgsmLoopService = LoopService.getInstance()
+				zgsmLoopService.reset()
+			} catch (error) {
+				provider.log(`[Loop] Failed to reset: ${error}`)
+			}
+			break
+		// costrict change - used for the loop mode of costrict
+		case "zgsmRequestLoopState":
+			try {
+				const { LoopService } = await import("../costrict/loop")
+				const zgsmLoopService = LoopService.getInstance()
+				const zgsmCurrentTask = zgsmLoopService.getCurrentTask()
+				const zgsmCurrentProgress = zgsmLoopService.getCurrentProgress()
+
+				if (zgsmCurrentTask) {
+					// 发送当前任务状态到前端，包括当前进度
+					await provider.postMessageToWebview({
+						type: "zgsmLoopStateResponse",
+						zgsmLoopTask: zgsmCurrentTask,
+						zgsmLoopProgress: zgsmCurrentProgress,
+					})
+				}
+			} catch (error) {
+				provider.log(`[Loop] Failed to get state: ${error}`)
+			}
+			break
+		// costrict change - used for the loop mode of costrict
+		case "zgsmShowLoopWarning":
+			vscode.window.showWarningMessage(message.text || "")
+			break
 		case "webviewDidLaunch":
 			// Load custom modes first
 			const customModes = await provider.customModesManager.getCustomModes()

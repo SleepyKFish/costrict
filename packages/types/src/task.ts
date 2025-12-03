@@ -100,6 +100,8 @@ export interface CreateTaskOptions {
 	zgsmWorkflowMode?: string
 	/** Initial status for the task's history item (e.g., "active" for child tasks) */
 	initialStatus?: "active" | "delegated" | "completed"
+	// costrict change
+	zgsmHighListFilesLimit?: boolean // Whether to use high file limit (for File Discovery Task in Loop mode of costrict)
 }
 
 export enum TaskStatus {

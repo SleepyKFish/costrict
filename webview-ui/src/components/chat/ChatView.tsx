@@ -58,6 +58,8 @@ import ChatSearch from "./ChatSearch"
 // import { useCloudUpsell } from "@src/hooks/useCloudUpsell"
 // import { Cloud } from "lucide-react"
 // import CloudAgents from "../cloud/CloudAgents"
+// costrict change - used for the loop mode of costrict
+import { LoopView as ZgsmLoopView } from "@src/components/loop-process"
 
 export interface ChatViewProps {
 	isHidden: boolean
@@ -65,8 +67,11 @@ export interface ChatViewProps {
 	hideAnnouncement: () => void
 }
 
+// costrict change - used for the loop mode of costrict
 export interface ChatViewRef {
 	acceptInput: () => void
+	showZgsmLoopView?: () => void
+	hideZgsmLoopView?: () => void
 }
 
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
@@ -83,6 +88,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const w = window as any
 		return w.AUDIO_BASE_URI || ""
 	})
+	// costrict change - Loop 子视图状态(used for the loop mode of costrict)
+	const [showZgsmLoop, setShowZgsmLoop] = useState(false)
 
 	const { t } = useAppTranslation()
 	const modeShortcutText = `${isMac ? "⌘" : "Ctrl"} + . ${t("chat:forNextMode")}, ${isMac ? "⌘" : "Ctrl"} + Shift + . ${t("chat:forPreviousMode")}`
@@ -108,6 +115,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		messageQueue = [],
 		experiments,
 		isBrowserSessionActive,
+		// costrict change - used for the loop mode of costrict
+		setIsInZgsmLoopView,
 	} = useExtensionState()
 
 	const messagesRef = useRef(messages)
@@ -1465,6 +1474,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 	}, [handleKeyDown])
 
+	// costrict change - used for the loop mode of costrict
 	useImperativeHandle(ref, () => ({
 		acceptInput: () => {
 			if (enableButtons && primaryButtonText) {
@@ -1473,7 +1483,29 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				handleSendMessage(inputValue, selectedImages)
 			}
 		},
+		showZgsmLoopView: () => {
+			setShowZgsmLoop(true)
+			setIsInZgsmLoopView(true)
+		},
+		hideZgsmLoopView: () => {
+			setShowZgsmLoop(false)
+			setIsInZgsmLoopView(false)
+		},
 	}))
+	// costrict change - 监听Loop相关消息(used for the loop mode of costrict)
+	useEffect(() => {
+		const handleZgsmLoopMessage = (e: MessageEvent) => {
+			const message = e.data
+			if (message.type === "action") {
+				if (message.action === "zgsmHideLoopView") {
+					setShowZgsmLoop(false)
+				}
+			}
+		}
+
+		window.addEventListener("message", handleZgsmLoopMessage)
+		return () => window.removeEventListener("message", handleZgsmLoopMessage)
+	}, [])
 
 	const handleCondenseContext = (taskId: string) => {
 		if (isCondensing || sendingDisabled) {
@@ -1490,7 +1522,24 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		<div
 			data-testid="chat-view"
 			className={isHidden ? "hidden" : "fixed top-8 left-0 right-0 bottom-0 flex flex-col overflow-hidden"}>
-			{/* {(showAnnouncement || showAnnouncementModal) && (
+			{/* costrict change - Loop 子视图(used for the loop mode of costrict) */}
+			{showZgsmLoop && (
+				<ZgsmLoopView
+					isHidden={false}
+					onSwitchToChat={() => {
+						// 发送事件通知关闭所有 popover
+						window.dispatchEvent(new CustomEvent("closeAllPopovers"))
+						// 使用 requestAnimationFrame 确保事件处理完成后再切换视图
+						requestAnimationFrame(() => {
+							setShowZgsmLoop(false)
+							setIsInZgsmLoopView(false)
+						})
+					}}
+				/>
+			)}
+			{/* costrict change - Chat 主视图 - 当显示 Loop 时隐藏(used for the loop mode of costrict) */}
+			<div className={showZgsmLoop ? "hidden" : "flex flex-col h-full"}>
+				{/* {(showAnnouncement || showAnnouncementModal) && (
 				<Announcement
 					hideAnnouncement={() => {
 						if (showAnnouncementModal) {
@@ -1502,49 +1551,49 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					}}
 				/>
 			)} */}
-			{task ? <></> : <NoticesBanner />}
-			{task ? (
-				<>
-					<TaskHeader
-						task={task}
-						tokensIn={apiMetrics.totalTokensIn}
-						tokensOut={apiMetrics.totalTokensOut}
-						cacheWrites={apiMetrics.totalCacheWrites}
-						cacheReads={apiMetrics.totalCacheReads}
-						totalCost={apiMetrics.totalCost}
-						contextTokens={apiMetrics.contextTokens}
-						buttonsDisabled={sendingDisabled}
-						handleCondenseContext={handleCondenseContext}
-						todos={latestTodos}
-					/>
+				{task ? <></> : <NoticesBanner />}
+				{task ? (
+					<>
+						<TaskHeader
+							task={task}
+							tokensIn={apiMetrics.totalTokensIn}
+							tokensOut={apiMetrics.totalTokensOut}
+							cacheWrites={apiMetrics.totalCacheWrites}
+							cacheReads={apiMetrics.totalCacheReads}
+							totalCost={apiMetrics.totalCost}
+							contextTokens={apiMetrics.contextTokens}
+							buttonsDisabled={sendingDisabled}
+							handleCondenseContext={handleCondenseContext}
+							todos={latestTodos}
+						/>
 
-					{hasSystemPromptOverride && (
-						<div className="px-3">
-							<SystemPromptWarning />
-						</div>
-					)}
+						{hasSystemPromptOverride && (
+							<div className="px-3">
+								<SystemPromptWarning />
+							</div>
+						)}
 
-					{checkpointWarning && (
-						<div className="px-3">
-							<CheckpointWarning warning={checkpointWarning} />
-						</div>
-					)}
-				</>
-			) : (
-				<div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-4 relative">
-					<div
-						className={` w-full flex flex-col gap-4 m-auto ${curWorkspaceHistory.length > 0 ? "mt-4" : ""} px-3.5 min-[370px]:px-10 pt-5 transition-all duration-300`}>
-						{/* Version indicator in top-right corner - only on welcome screen */}
-						{/* <VersionIndicator
+						{checkpointWarning && (
+							<div className="px-3">
+								<CheckpointWarning warning={checkpointWarning} />
+							</div>
+						)}
+					</>
+				) : (
+					<div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-4 relative">
+						<div
+							className={` w-full flex flex-col gap-4 m-auto ${curWorkspaceHistory.length > 0 ? "mt-4" : ""} px-3.5 min-[370px]:px-10 pt-5 transition-all duration-300`}>
+							{/* Version indicator in top-right corner - only on welcome screen */}
+							{/* <VersionIndicator
 							onClick={() => setShowAnnouncementModal(false)}
 							className="absolute top-2 right-3 z-10"
 						/> */}
-						<VersionIndicator onClick={() => {}} className="absolute top-2 right-3 z-10" />
+							<VersionIndicator onClick={() => {}} className="absolute top-2 right-3 z-10" />
 
-						<RooHero />
-						{/* {telemetrySetting === "unset" && <TelemetryBanner />} */}
+							<RooHero />
+							{/* {telemetrySetting === "unset" && <TelemetryBanner />} */}
 
-						{/* <div className="mb-2.5">
+							{/* <div className="mb-2.5">
 							{cloudIsAuthenticated || curWorkspaceHistory.length < 4 ? (
 								<RooTips />
 							) : (
@@ -1565,13 +1614,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								</>
 							)}
 						</div> */}
-						<div className="mb-2.5">
-							<RooTips />
-						</div>
-						{/* Show the task history preview if expanded and tasks exist */}
-						{curWorkspaceHistory.length > 0 && <HistoryPreview />}
+							<div className="mb-2.5">
+								<RooTips />
+							</div>
+							{/* Show the task history preview if expanded and tasks exist */}
+							{curWorkspaceHistory.length > 0 && <HistoryPreview />}
 
-						{/* {cloudIsAuthenticated ? (
+							{/* {cloudIsAuthenticated ? (
 							// Logged in users should always see their agents (or be upsold)
 							<CloudAgents />
 						) : (
@@ -1590,180 +1639,196 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								/>
 							</DismissibleUpsell>
 						)} */}
+						</div>
 					</div>
-				</div>
-			)}
+				)}
 
-			{task && (
-				<>
-					{showSearch && !isHidden && experiments?.chatSearch && (
-						<ChatSearch
-							showSearch={showSearch}
-							messages={modifiedMessages}
-							onNavigateToResult={scrollToMessage}
-							onClose={() => {
-								setSearchQuery("")
-								setShowSearch(false)
-							}}
-							onSearchChange={(_, query) => setSearchQuery((query || "").trim())}
-						/>
-					)}
-
-					<div className="grow flex flex-col min-h-0" ref={scrollContainerRef}>
-						<div className="flex-auto min-h-0">
-							<Virtuoso
-								ref={virtuosoRef}
-								key={task.ts}
-								className="h-full overflow-y-auto mb-1"
-								increaseViewportBy={{ top: 3_000, bottom: 1000 }}
-								data={groupedMessages}
-								itemContent={itemContent}
-								atBottomStateChange={(isAtBottom: boolean) => {
-									setIsAtBottom(isAtBottom)
-									if (isAtBottom) {
-										disableAutoScrollRef.current = false
-									}
-									setShowScrollToBottom(disableAutoScrollRef.current && !isAtBottom)
+				{task && (
+					<>
+						{showSearch && !isHidden && experiments?.chatSearch && (
+							<ChatSearch
+								showSearch={showSearch}
+								messages={modifiedMessages}
+								onNavigateToResult={scrollToMessage}
+								onClose={() => {
+									setSearchQuery("")
+									setShowSearch(false)
 								}}
-								atBottomThreshold={10}
-								initialTopMostItemIndex={groupedMessages.length - 1}
+								onSearchChange={(_, query) => setSearchQuery((query || "").trim())}
 							/>
-						</div>
-					</div>
-					{areButtonsVisible && (
-						<div
-							className={`flex h-9 items-center mb-1 px-[15px] ${
-								showScrollToBottom
-									? "opacity-100"
-									: enableButtons || (isStreaming && !didClickCancel)
-										? "opacity-100"
-										: "opacity-50"
-							}`}>
-							{showScrollToBottom ? (
-								<StandardTooltip content={t("chat:scrollToBottom")}>
-									<Button
-										variant="secondary"
-										className="flex-[2]"
-										onClick={() => {
-											scrollToBottomSmooth()
+						)}
+
+						<div className="grow flex flex-col min-h-0" ref={scrollContainerRef}>
+							<div className="flex-auto min-h-0">
+								<Virtuoso
+									ref={virtuosoRef}
+									key={task.ts}
+									className="h-full overflow-y-auto mb-1"
+									increaseViewportBy={{ top: 3_000, bottom: 1000 }}
+									data={groupedMessages}
+									itemContent={itemContent}
+									atBottomStateChange={(isAtBottom: boolean) => {
+										setIsAtBottom(isAtBottom)
+										if (isAtBottom) {
 											disableAutoScrollRef.current = false
-										}}>
-										<span className="codicon codicon-chevron-down"></span>
-									</Button>
-								</StandardTooltip>
-							) : (
-								<>
-									{primaryButtonText && !isStreaming && (
-										<StandardTooltip
-											content={
-												primaryButtonText === t("chat:retry.title")
-													? t("chat:retry.tooltip")
-													: primaryButtonText === t("chat:save.title")
-														? t("chat:save.tooltip")
-														: primaryButtonText === t("chat:approve.title")
-															? t("chat:approve.tooltip")
-															: primaryButtonText === t("chat:runCommand.title")
-																? t("chat:runCommand.tooltip")
-																: primaryButtonText === t("chat:startNewTask.title")
-																	? t("chat:startNewTask.tooltip")
-																	: primaryButtonText === t("chat:resumeTask.title")
-																		? t("chat:resumeTask.tooltip")
-																		: primaryButtonText ===
-																			  t("chat:proceedAnyways.title")
-																			? t("chat:proceedAnyways.tooltip")
-																			: primaryButtonText ===
-																				  t("chat:proceedWhileRunning.title")
-																				? t("chat:proceedWhileRunning.tooltip")
-																				: undefined
-											}>
-											<Button
-												variant="primary"
-												disabled={!enableButtons}
-												className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
-												onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
-												{primaryButtonText}
-											</Button>
-										</StandardTooltip>
-									)}
-									{(secondaryButtonText || isStreaming) && (
-										<StandardTooltip
-											content={
-												isStreaming
-													? t("chat:cancel.tooltip")
-													: secondaryButtonText === t("chat:startNewTask.title")
-														? t("chat:startNewTask.tooltip")
-														: secondaryButtonText === t("chat:reject.title")
-															? t("chat:reject.tooltip")
-															: secondaryButtonText === t("chat:terminate.title")
-																? t("chat:terminate.tooltip")
-																: undefined
-											}>
-											<Button
-												variant="secondary"
-												disabled={!enableButtons && !(isStreaming && !didClickCancel)}
-												className={isStreaming ? "flex-[2] ml-0" : "flex-1 ml-[6px]"}
-												onClick={() => handleSecondaryButtonClick(inputValue, selectedImages)}>
-												{isStreaming ? t("chat:cancel.title") : secondaryButtonText}
-											</Button>
-										</StandardTooltip>
-									)}
-								</>
-							)}
+										}
+										setShowScrollToBottom(disableAutoScrollRef.current && !isAtBottom)
+									}}
+									atBottomThreshold={10}
+									initialTopMostItemIndex={groupedMessages.length - 1}
+								/>
+							</div>
 						</div>
-					)}
-				</>
-			)}
+						{areButtonsVisible && (
+							<div
+								className={`flex h-9 items-center mb-1 px-[15px] ${
+									showScrollToBottom
+										? "opacity-100"
+										: enableButtons || (isStreaming && !didClickCancel)
+											? "opacity-100"
+											: "opacity-50"
+								}`}>
+								{showScrollToBottom ? (
+									<StandardTooltip content={t("chat:scrollToBottom")}>
+										<Button
+											variant="secondary"
+											className="flex-[2]"
+											onClick={() => {
+												scrollToBottomSmooth()
+												disableAutoScrollRef.current = false
+											}}>
+											<span className="codicon codicon-chevron-down"></span>
+										</Button>
+									</StandardTooltip>
+								) : (
+									<>
+										{primaryButtonText && !isStreaming && (
+											<StandardTooltip
+												content={
+													primaryButtonText === t("chat:retry.title")
+														? t("chat:retry.tooltip")
+														: primaryButtonText === t("chat:save.title")
+															? t("chat:save.tooltip")
+															: primaryButtonText === t("chat:approve.title")
+																? t("chat:approve.tooltip")
+																: primaryButtonText === t("chat:runCommand.title")
+																	? t("chat:runCommand.tooltip")
+																	: primaryButtonText === t("chat:startNewTask.title")
+																		? t("chat:startNewTask.tooltip")
+																		: primaryButtonText ===
+																			  t("chat:resumeTask.title")
+																			? t("chat:resumeTask.tooltip")
+																			: primaryButtonText ===
+																				  t("chat:proceedAnyways.title")
+																				? t("chat:proceedAnyways.tooltip")
+																				: primaryButtonText ===
+																					  t(
+																							"chat:proceedWhileRunning.title",
+																					  )
+																					? t(
+																							"chat:proceedWhileRunning.tooltip",
+																						)
+																					: undefined
+												}>
+												<Button
+													variant="primary"
+													disabled={!enableButtons}
+													className={
+														secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"
+													}
+													onClick={() =>
+														handlePrimaryButtonClick(inputValue, selectedImages)
+													}>
+													{primaryButtonText}
+												</Button>
+											</StandardTooltip>
+										)}
+										{(secondaryButtonText || isStreaming) && (
+											<StandardTooltip
+												content={
+													isStreaming
+														? t("chat:cancel.tooltip")
+														: secondaryButtonText === t("chat:startNewTask.title")
+															? t("chat:startNewTask.tooltip")
+															: secondaryButtonText === t("chat:reject.title")
+																? t("chat:reject.tooltip")
+																: secondaryButtonText === t("chat:terminate.title")
+																	? t("chat:terminate.tooltip")
+																	: undefined
+												}>
+												<Button
+													variant="secondary"
+													disabled={!enableButtons && !(isStreaming && !didClickCancel)}
+													className={isStreaming ? "flex-[2] ml-0" : "flex-1 ml-[6px]"}
+													onClick={() =>
+														handleSecondaryButtonClick(inputValue, selectedImages)
+													}>
+													{isStreaming ? t("chat:cancel.title") : secondaryButtonText}
+												</Button>
+											</StandardTooltip>
+										)}
+									</>
+								)}
+							</div>
+						)}
+					</>
+				)}
 
-			<QueuedMessages
-				queue={messageQueue}
-				onRemove={(index) => {
-					if (messageQueue[index]) {
-						vscode.postMessage({ type: "removeQueuedMessage", text: messageQueue[index].id })
-					}
-				}}
-				onUpdate={(index, newText) => {
-					if (messageQueue[index]) {
-						vscode.postMessage({
-							type: "editQueuedMessage",
-							payload: { id: messageQueue[index].id, text: newText, images: messageQueue[index].images },
-						})
-					}
-				}}
-			/>
-			<ChatTextArea
-				ref={textAreaRef}
-				inputValue={inputValue}
-				setInputValue={setInputValue}
-				sendingDisabled={sendingDisabled || isProfileDisabled}
-				selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
-				placeholderText={placeholderText}
-				selectedImages={selectedImages}
-				isStreaming={isStreaming}
-				setSelectedImages={setSelectedImages}
-				onSend={() => handleSendMessage(inputValue, selectedImages, "user")}
-				onSelectImages={selectImages}
-				shouldDisableImages={shouldDisableImages}
-				onHeightChange={() => {
-					if (isAtBottom) {
-						scrollToBottomAuto()
-					}
-				}}
-				mode={mode}
-				setMode={setMode}
-				modeShortcutText={modeShortcutText}
-				hoverPreviewMap={hoverPreviewMap}
-				isBrowserSessionActive={!!isBrowserSessionActive}
-				showBrowserDockToggle={showBrowserDockToggle}
-			/>
+				<QueuedMessages
+					queue={messageQueue}
+					onRemove={(index) => {
+						if (messageQueue[index]) {
+							vscode.postMessage({ type: "removeQueuedMessage", text: messageQueue[index].id })
+						}
+					}}
+					onUpdate={(index, newText) => {
+						if (messageQueue[index]) {
+							vscode.postMessage({
+								type: "editQueuedMessage",
+								payload: {
+									id: messageQueue[index].id,
+									text: newText,
+									images: messageQueue[index].images,
+								},
+							})
+						}
+					}}
+				/>
+				<ChatTextArea
+					ref={textAreaRef}
+					inputValue={inputValue}
+					setInputValue={setInputValue}
+					sendingDisabled={sendingDisabled || isProfileDisabled}
+					selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
+					placeholderText={placeholderText}
+					selectedImages={selectedImages}
+					isStreaming={isStreaming}
+					setSelectedImages={setSelectedImages}
+					onSend={() => handleSendMessage(inputValue, selectedImages, "user")}
+					onSelectImages={selectImages}
+					shouldDisableImages={shouldDisableImages}
+					onHeightChange={() => {
+						if (isAtBottom) {
+							scrollToBottomAuto()
+						}
+					}}
+					mode={mode}
+					setMode={setMode}
+					modeShortcutText={modeShortcutText}
+					hoverPreviewMap={hoverPreviewMap}
+					isBrowserSessionActive={!!isBrowserSessionActive}
+					showBrowserDockToggle={showBrowserDockToggle}
+				/>
 
-			{isProfileDisabled && (
-				<div className="px-3">
-					<ProfileViolationWarning />
-				</div>
-			)}
+				{isProfileDisabled && (
+					<div className="px-3">
+						<ProfileViolationWarning />
+					</div>
+				)}
 
-			<div id="roo-portal" />
-			{/* <CloudUpsellDialog open={isUpsellOpen} onOpenChange={closeUpsell} onConnect={handleConnect} /> */}
+				<div id="roo-portal" />
+				{/* <CloudUpsellDialog open={isUpsellOpen} onOpenChange={closeUpsell} onConnect={handleConnect} /> */}
+			</div>
 		</div>
 	)
 }
