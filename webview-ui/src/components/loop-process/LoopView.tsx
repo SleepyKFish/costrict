@@ -234,7 +234,9 @@ const LoopView: React.FC<LoopViewProps> = ({ isHidden, onSwitchToChat }) => {
 
 	// costrict change - 重新开始
 	const handleReset = useCallback(() => {
+		// 重置所有状态，包括输入框
 		setUserPrompt("")
+		setSelectedImages([])
 		setProgress(null)
 		setSubTasks([])
 		setIsStarted(false)
@@ -245,6 +247,10 @@ const LoopView: React.FC<LoopViewProps> = ({ isHidden, onSwitchToChat }) => {
 
 	// 返回到对话界面
 	const handleBackToChat = useCallback(() => {
+		// costrict change - 切换回 Chat 时，清空 Loop 的输入框
+		setUserPrompt("")
+		setSelectedImages([])
+
 		if (onSwitchToChat) {
 			onSwitchToChat()
 		} else {
