@@ -1484,6 +1484,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 		},
 		showZgsmLoopView: () => {
+			// costrict change - 切换到 Loop 模式时，清空 Chat 的输入框
+			setInputValue("")
+			setSelectedImages([])
 			setShowZgsmLoop(true)
 			setIsInZgsmLoopView(true)
 		},
